@@ -131,6 +131,28 @@ docker exec bitcoind-testnet4 bitcoin-cli -testnet4 \
 
 For the impatient - get mining in 5 minutes:
 
+### Option A: Use the Interactive Setup Wizard (Recommended)
+
+```bash
+# 1. Clone the repository (use the solo-mining branch)
+git clone git@github.com:average-gary/sv2-apps.git
+cd sv2-apps
+git checkout solo-mining-testnet4
+cd docker/solo-mining
+
+# 2. Run the setup wizard
+./setup-wizard.sh
+```
+
+The wizard will:
+- Check all prerequisites (Docker, disk space, ports)
+- Guide you through configuration (reward address, miner type, identity)
+- Generate your `docker_env.solo` file
+- Start all services
+- Show you how to monitor progress and connect miners
+
+### Option B: Manual Setup
+
 ```bash
 # 1. Clone the repository (use the solo-mining branch)
 git clone git@github.com:average-gary/sv2-apps.git
@@ -150,7 +172,7 @@ nano docker_env.solo  # or vim, or your preferred editor
 docker compose -f docker-compose-solo.yml --env-file docker_env.solo up -d
 
 # 5. Wait for Bitcoin Core to sync (check progress)
-docker logs -f bitcoind-testnet4
+./scripts/check-ibd-status.sh
 
 # 6. Once synced, point your miner to:
 #    stratum+tcp://YOUR_SERVER_IP:34255
@@ -178,25 +200,30 @@ git checkout solo-mining-testnet4
 cd docker/solo-mining
 ```
 
+> **Tip**: You can run `./setup-wizard.sh` for an interactive guided setup instead of following these manual steps.
+
 ### Step 2: Understand the Directory Structure
 
 ```
 solo-mining/
 ├── docker-compose-solo.yml      # Main compose file
 ├── docker_env.solo.example      # Environment template
+├── setup-wizard.sh              # Interactive setup wizard
 ├── config/
 │   ├── jdc-solo-config.toml.template      # JDC configuration
 │   └── translator-solo-config.toml.template  # Translator configuration
 ├── prometheus/
 │   └── prometheus.yml           # Prometheus scrape config
-└── grafana/
-    ├── provisioning/
-    │   ├── datasources/
-    │   │   └── datasources.yml  # Prometheus datasource
-    │   └── dashboards/
-    │       └── dashboards.yml   # Dashboard provisioning
-    └── dashboards/
-        └── sv2-solo-mining.json # Pre-built dashboard
+├── grafana/
+│   ├── provisioning/
+│   │   ├── datasources/
+│   │   │   └── datasources.yml  # Prometheus datasource
+│   │   └── dashboards/
+│   │       └── dashboards.yml   # Dashboard provisioning
+│   └── dashboards/
+│       └── sv2-solo-mining.json # Pre-built dashboard
+└── scripts/
+    └── check-ibd-status.sh      # Bitcoin sync status checker
 ```
 
 ### Step 3: Configure Environment

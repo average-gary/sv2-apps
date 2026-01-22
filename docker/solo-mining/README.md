@@ -21,6 +21,21 @@ cd docker/solo-mining
 
 ## Quick Start
 
+### Option A: Interactive Setup Wizard (Recommended)
+
+```bash
+./setup-wizard.sh
+```
+
+The wizard will guide you through:
+- Checking prerequisites (Docker, disk space, ports)
+- Configuring your reward address
+- Setting up for your miner type (CPU, USB, ASIC)
+- Choosing your mining identity and block signature
+- Starting all services
+
+### Option B: Manual Setup
+
 ```bash
 # 1. Configure your reward address
 cp docker_env.solo.example docker_env.solo
@@ -83,6 +98,7 @@ solo-mining/
 │       └── sv2-solo-mining.json
 ├── scripts/
 │   └── check-ibd-status.sh          # Helper to check Bitcoin sync status
+├── setup-wizard.sh                  # Interactive setup wizard
 ├── README.md                        # This file
 └── SOLO-MINING-GUIDE.md            # Full guide (for GitHub Gist)
 ```
