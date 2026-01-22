@@ -1,0 +1,97 @@
+# =============================================================================
+# Translator Proxy - SV1 to SV2 Bridge for Solo Mining
+# =============================================================================
+#
+# The Translator Proxy allows legacy Stratum V1 miners (most ASICs) to connect
+# to the SV2 stack. It translates between protocols seamlessly.
+#
+# Your SV1 miners connect here -> Translator converts to SV2 -> JDC -> Bitcoin Core
+#
+# =============================================================================
+
+# Address where the Translator listens for SV1 miner connections
+# Point your miners to this address (e.g., stratum+tcp://YOUR_IP:34255)
+downstream_address = "0.0.0.0"
+downstream_port = 34255
+
+# Protocol version support
+max_supported_version = 2
+min_supported_version = 2
+
+# Extranonce2 size for downstream connections
+# Controls the rollable part of the extranonce for miners
+# Max value for CGminer: 8, Min value: 2
+downstream_extranonce2_size = 4
+
+# Your username/identity (appears in logs)
+user_identity = "${TPROXY_USER_IDENTITY}"
+
+# Channel aggregation: 
+# - false: Each miner gets its own upstream channel (recommended for solo)
+# - true: All miners share one upstream channel
+aggregate_channels = false
+
+# =============================================================================
+# MONITORING
+# =============================================================================
+
+# HTTP server for Prometheus metrics
+# Access at http://localhost:9092/metrics
+monitoring_address = "0.0.0.0:9092"
+
+# =============================================================================
+# PROTOCOL EXTENSIONS
+# =============================================================================
+
+# Extensions the translator supports
+supported_extensions = [
+    0x0002,  # Worker-Specific Hashrate Tracking
+]
+
+# Extensions the translator requires (empty = no requirements)
+required_extensions = []
+
+# =============================================================================
+# DIFFICULTY CONFIGURATION
+# =============================================================================
+
+[downstream_difficulty_config]
+# Minimum hashrate of the weakest miner connecting (in H/s)
+# Examples:
+#   - 1 TH/s  = 1_000_000_000_000.0
+#   - 10 TH/s = 10_000_000_000_000.0
+#   - 100 TH/s = 100_000_000_000_000.0
+#
+# For testing with CPU miner, use a low value like 1_000_000.0 (1 MH/s)
+min_individual_miner_hashrate = ${TPROXY_MIN_INDIVIDUAL_MINER_HASHRATE}
+
+# Target shares per minute from each miner
+# Higher = more frequent share submission, more network traffic
+# Lower = less frequent, but longer gaps between feedback
+shares_per_minute = ${TPROXY_SHARES_PER_MINUTE}
+
+# Variable difficulty adjustment
+# - false: JDC handles difficulty (recommended when connecting to JDC)
+# - true: Translator adjusts difficulty based on miner performance
+enable_vardiff = false
+
+# Interval (seconds) for sending keepalive jobs to miners
+# Prevents miner timeout during periods of low activity
+job_keepalive_interval_secs = 60
+
+# =============================================================================
+# UPSTREAM CONNECTION - JDC
+# =============================================================================
+#
+# The Translator connects to JDC (Job Declarator Client) as its upstream.
+# JDC handles block template generation and solo mining logic.
+#
+
+[[upstreams]]
+# JDC address (within Docker network)
+address = "172.30.0.20"
+port = 34265
+
+# JDC's authority public key for encrypted connection
+# Must match the authority_public_key in JDC config
+authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"

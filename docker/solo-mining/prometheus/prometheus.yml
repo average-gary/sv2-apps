@@ -1,0 +1,52 @@
+# =============================================================================
+# Prometheus Configuration for SV2 Solo Mining Stack
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+  # Attach these labels to all metrics
+  external_labels:
+    monitor: 'sv2-solo-mining'
+
+# Alerting configuration (optional - can add alertmanager later)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: []
+
+# Scrape configurations
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # Prometheus self-monitoring
+  # ---------------------------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # ---------------------------------------------------------------------------
+  # JDC (Job Declarator Client) Metrics
+  # ---------------------------------------------------------------------------
+  - job_name: 'jdc'
+    static_configs:
+      - targets: ['172.30.0.20:9091']
+        labels:
+          service: 'jdc'
+          role: 'solo-miner'
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # ---------------------------------------------------------------------------
+  # Translator Proxy Metrics
+  # ---------------------------------------------------------------------------
+  - job_name: 'translator'
+    static_configs:
+      - targets: ['172.30.0.21:9092']
+        labels:
+          service: 'translator'
+          role: 'sv1-bridge'
+    metrics_path: /metrics
+    scrape_interval: 10s

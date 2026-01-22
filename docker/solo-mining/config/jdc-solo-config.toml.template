@@ -1,0 +1,125 @@
+# =============================================================================
+# JDC (Job Declarator Client) - Pure Solo Mining Configuration
+# =============================================================================
+#
+# This configuration runs JDC in PURE SOLO MINING mode.
+# No upstream pool or JDS is configured - blocks are mined directly to YOUR address.
+#
+# IMPORTANT: When you find a block, the coinbase reward goes to YOUR wallet!
+#
+# =============================================================================
+
+# Address where JDC listens for downstream connections (Translator Proxy or SV2 miners)
+listening_address = "0.0.0.0:34265"
+
+# Protocol version support
+max_supported_version = 2
+min_supported_version = 2
+
+# Authentication keys for encrypted downstream connections
+# These are the default SRI keys - fine for testnet, generate your own for mainnet
+authority_public_key = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+authority_secret_key = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n"
+cert_validity_sec = 3600
+
+# =============================================================================
+# SOLO MINING SETTINGS - CONFIGURE THESE!
+# =============================================================================
+
+# Your username/identity (appears in logs and metrics)
+user_identity = "${JDC_USER_IDENTITY}"
+
+# Difficulty settings - how many shares per minute to target
+# Lower = easier shares, more frequent feedback
+# For CPU mining on testnet, 6.0 is reasonable
+shares_per_minute = ${JDC_SHARES_PER_MINUTE}
+
+# How many shares to batch before acknowledging
+share_batch_size = ${JDC_SHARE_BATCH_SIZE}
+
+# Mining mode: FULLTEMPLATE means you build the entire block template
+# This is what enables true solo mining with full block construction
+mode = "FULLTEMPLATE"
+
+# Your custom signature in the coinbase (appears in mined blocks!)
+# This is your "tag" that proves you mined the block
+jdc_signature = "${JDC_SIGNATURE}"
+
+# =============================================================================
+# COINBASE REWARD ADDRESS - WHERE YOUR MINING REWARDS GO!
+# =============================================================================
+#
+# This is the MOST IMPORTANT setting for solo mining.
+# When you find a block, the coinbase reward (block subsidy + fees) goes here.
+#
+# Format: addr(<your_testnet4_address>)
+# Example: addr(tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx)
+#
+# Generate a testnet4 address using Bitcoin Core:
+#   bitcoin-cli -testnet4 getnewaddress "solo-mining" bech32
+#
+coinbase_reward_script = "${JDC_COINBASE_REWARD_SCRIPT}"
+
+# =============================================================================
+# MONITORING
+# =============================================================================
+
+# HTTP server for Prometheus metrics and monitoring
+# Access at http://localhost:9091/metrics
+monitoring_address = "0.0.0.0:9091"
+
+# =============================================================================
+# PROTOCOL EXTENSIONS
+# =============================================================================
+
+# Extensions this JDC supports
+supported_extensions = [
+    0x0002,  # Worker-Specific Hashrate Tracking
+]
+
+# Extensions required from downstream (empty = no requirements)
+required_extensions = []
+
+# =============================================================================
+# UPSTREAM CONFIGURATION - INTENTIONALLY EMPTY FOR PURE SOLO MINING
+# =============================================================================
+#
+# By NOT defining any [[upstreams]] sections, JDC automatically operates in
+# pure solo mining mode. It will:
+#
+#   1. Get block templates directly from your Bitcoin Core node
+#   2. Build complete blocks with YOUR coinbase address
+#   3. Submit valid blocks directly to the Bitcoin network
+#
+# If you wanted pool mining with solo fallback, you would add:
+#
+# [[upstreams]]
+# authority_pubkey = "pool_pubkey_here"
+# pool_address = "pool.example.com"
+# pool_port = 34254
+# jds_address = "jds.example.com"
+# jds_port = 34264
+#
+# But for PURE solo mining, we leave this section empty!
+
+# =============================================================================
+# BITCOIN CORE IPC CONNECTION
+# =============================================================================
+#
+# JDC connects to Bitcoin Core via IPC (Inter-Process Communication) using
+# a Unix socket. This is more efficient than RPC for template generation.
+#
+# The socket is mounted into the container at /root/.bitcoin/testnet4/node.sock
+#
+
+[template_provider_type.BitcoinCoreIpc]
+# Network must match your Bitcoin Core node
+network = "testnet4"
+
+# Fee threshold (satoshis) - generate new template when mempool fees change by this amount
+# Lower = more responsive to fee changes, but more work
+fee_threshold = ${JDC_FEE_THRESHOLD}
+
+# Minimum interval (seconds) between template updates
+# Prevents excessive template generation
+min_interval = ${JDC_MIN_INTERVAL}

@@ -1,0 +1,87 @@
+# =============================================================================
+# SV2 Solo Mining Environment Configuration
+# =============================================================================
+#
+# Copy this file to 'docker_env.solo' and customize the values below.
+#
+# IMPORTANT: The coinbase reward script MUST be set to YOUR testnet4 address!
+#
+# =============================================================================
+
+# =============================================================================
+# BITCOIN CORE SETTINGS
+# =============================================================================
+
+# RPC credentials (must match your bitcoin.conf if running external node)
+BITCOIN_RPC_USER=sv2user
+BITCOIN_RPC_PASS=sv2password
+
+# =============================================================================
+# JDC (JOB DECLARATOR CLIENT) SETTINGS
+# =============================================================================
+
+# Your username/identity (appears in logs and metrics)
+JDC_USER_IDENTITY=solo_miner
+
+# Difficulty settings
+# shares_per_minute: How many shares to target per minute (6.0 is reasonable)
+# share_batch_size: How many shares to batch before acknowledging
+JDC_SHARES_PER_MINUTE=6.0
+JDC_SHARE_BATCH_SIZE=10
+
+# Your custom signature in mined blocks (like graffiti!)
+# This string appears in the coinbase transaction of blocks you mine
+JDC_SIGNATURE=SoloMinedWithSV2
+
+# =============================================================================
+# COINBASE REWARD ADDRESS - MOST IMPORTANT SETTING!
+# =============================================================================
+#
+# This is where your mining rewards go when you find a block!
+#
+# Format: addr(<your_testnet4_bech32_address>)
+#
+# To generate a testnet4 address:
+#   1. Using Bitcoin Core: bitcoin-cli -testnet4 getnewaddress "solo" bech32
+#   2. Using any testnet4-compatible wallet
+#
+# Example addresses (DO NOT USE - generate your own!):
+#   addr(tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx)
+#   addr(tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7)
+#
+# CHANGE THIS TO YOUR ADDRESS:
+JDC_COINBASE_REWARD_SCRIPT=addr(tb1qYOUR_TESTNET4_ADDRESS_HERE)
+
+# Template generation settings
+# fee_threshold: Regenerate template when fees change by this many sats
+# min_interval: Minimum seconds between template updates
+JDC_FEE_THRESHOLD=100
+JDC_MIN_INTERVAL=5
+
+# =============================================================================
+# TRANSLATOR PROXY SETTINGS
+# =============================================================================
+
+# Your username for the translator
+TPROXY_USER_IDENTITY=solo_miner
+
+# Minimum hashrate of miners connecting (in H/s)
+# Examples:
+#   CPU miner (testing):  1_000_000.0        (1 MH/s)
+#   USB miner:           100_000_000_000.0   (100 GH/s)
+#   S9:                   14_000_000_000_000.0 (14 TH/s)
+#   S19:                  110_000_000_000_000.0 (110 TH/s)
+#
+# For testing with CPU miner, use low value:
+TPROXY_MIN_INDIVIDUAL_MINER_HASHRATE=1_000_000.0
+
+# Target shares per minute from miners
+TPROXY_SHARES_PER_MINUTE=6.0
+
+# =============================================================================
+# GRAFANA SETTINGS
+# =============================================================================
+
+# Admin credentials for Grafana dashboard
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=sv2mining

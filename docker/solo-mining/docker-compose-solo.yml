@@ -1,0 +1,202 @@
+# =============================================================================
+# SV2 Solo Mining Stack for Bitcoin Testnet4
+# =============================================================================
+#
+# This Docker Compose file sets up a complete solo mining environment:
+#   - Bitcoin Core (testnet4) with IPC enabled
+#   - Job Declarator Client (JDC) in pure solo mining mode
+#   - Translator Proxy (bridges SV1 miners to SV2)
+#   - Prometheus (metrics collection)
+#   - Grafana (metrics visualization)
+#
+# Usage:
+#   1. Copy docker_env.solo.example to docker_env.solo and configure
+#   2. Run: docker compose -f docker-compose-solo.yml --env-file docker_env.solo up -d
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Bitcoin Core - Testnet4 with IPC enabled
+  # ---------------------------------------------------------------------------
+  bitcoind:
+    image: bitcoin/bitcoin:28.0  # Use official Bitcoin Core image
+    container_name: bitcoind-testnet4
+    restart: unless-stopped
+    command:
+      - -testnet4
+      - -server=1
+      - -rpcuser=${BITCOIN_RPC_USER:-sv2user}
+      - -rpcpassword=${BITCOIN_RPC_PASS:-sv2password}
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -ipcbind=unix
+      - -txindex=1
+      - -printtoconsole
+    volumes:
+      - bitcoin-data:/home/bitcoin/.bitcoin
+      - bitcoin-ipc:/home/bitcoin/.bitcoin/testnet4
+    ports:
+      - "48332:48332"  # Testnet4 RPC port
+      - "48333:48333"  # Testnet4 P2P port
+    networks:
+      sv2_solo:
+        ipv4_address: 172.30.0.10
+    healthcheck:
+      # This healthcheck ensures IBD (Initial Block Download) is complete
+      # It checks that initialblockdownload is false before marking healthy
+      test: >
+        sh -c '
+        INFO=$$(bitcoin-cli -testnet4 -rpcuser=$${BITCOIN_RPC_USER:-sv2user} -rpcpassword=$${BITCOIN_RPC_PASS:-sv2password} getblockchaininfo 2>/dev/null) &&
+        echo "$$INFO" | grep -q "\"initialblockdownload\": false"
+        '
+      interval: 30s
+      timeout: 10s
+      retries: 1000  # IBD can take hours, keep retrying
+      start_period: 120s  # Give Bitcoin Core time to start up
+
+  # ---------------------------------------------------------------------------
+  # Job Declarator Client (JDC) - Pure Solo Mining Mode
+  # ---------------------------------------------------------------------------
+  # NOTE: JDC will NOT start until Bitcoin Core IBD is complete!
+  # The bitcoind healthcheck verifies initialblockdownload=false
+  jd_client:
+    image: stratumv2/jd_client_sv2:main
+    container_name: jdc-solo
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy  # Waits for IBD to complete!
+    env_file:
+      - docker_env.solo
+    volumes:
+      - ./config/jdc-solo-config.toml.template:/app/jdc-config.toml.template:ro
+      - bitcoin-ipc:/root/.bitcoin/testnet4:ro
+    entrypoint: >
+      sh -c '
+        envsubst < /app/jdc-config.toml.template > /app/jdc-config.toml &&
+        echo "=== JDC Solo Mining Configuration ===" &&
+        cat /app/jdc-config.toml &&
+        echo "=====================================" &&
+        exec /app/jd_client_sv2
+      '
+    ports:
+      - "34265:34265"  # JDC listening port (for Translator Proxy)
+      - "9091:9091"    # Prometheus metrics
+    networks:
+      sv2_solo:
+        ipv4_address: 172.30.0.20
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9091/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Translator Proxy - Bridges SV1 miners to SV2 (JDC)
+  # ---------------------------------------------------------------------------
+  translator:
+    image: stratumv2/translator_sv2:main
+    container_name: translator-solo
+    restart: unless-stopped
+    depends_on:
+      jd_client:
+        condition: service_healthy
+    env_file:
+      - docker_env.solo
+    volumes:
+      - ./config/translator-solo-config.toml.template:/app/proxy-config.toml.template:ro
+    entrypoint: >
+      sh -c '
+        envsubst < /app/proxy-config.toml.template > /app/translator-config.toml &&
+        echo "=== Translator Proxy Configuration ===" &&
+        cat /app/translator-config.toml &&
+        echo "=======================================" &&
+        exec /app/translator_sv2
+      '
+    ports:
+      - "34255:34255"  # SV1 mining port (point your miners here)
+      - "9092:9092"    # Prometheus metrics
+    networks:
+      sv2_solo:
+        ipv4_address: 172.30.0.21
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9092/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Prometheus - Metrics Collection
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus-solo
+    restart: unless-stopped
+    depends_on:
+      - jd_client
+      - translator
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    networks:
+      sv2_solo:
+        ipv4_address: 172.30.0.30
+
+  # ---------------------------------------------------------------------------
+  # Grafana - Metrics Visualization
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana-solo
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-sv2mining}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      sv2_solo:
+        ipv4_address: 172.30.0.31
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  sv2_solo:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  bitcoin-data:
+    name: sv2-solo-bitcoin-data
+  bitcoin-ipc:
+    name: sv2-solo-bitcoin-ipc
+  prometheus-data:
+    name: sv2-solo-prometheus-data
+  grafana-data:
+    name: sv2-solo-grafana-data
