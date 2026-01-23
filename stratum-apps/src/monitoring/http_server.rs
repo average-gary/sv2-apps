@@ -12,6 +12,10 @@ use super::{
     sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary},
     GlobalInfo,
 };
+
+mod cleanup;
+use cleanup::{cleanup_stale_client_gauges, cleanup_stale_server_gauges};
+
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -182,7 +186,8 @@ impl MonitoringServer {
 
         let metrics = SnapshotMetrics::new(has_server, has_clients, has_sv1)?;
 
-        // Create event metrics using the same registry
+        // Create event metrics using the same registry as SnapshotMetrics
+        // EventMetrics registers counter and histogram metrics, SnapshotMetrics only has gauges
         let event_metrics = Arc::new(super::event_metrics::EventMetrics::new(
             &metrics.registry,
             has_server,
@@ -916,6 +921,22 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
         if let Some(ref metric) = state.metrics.sv1_hashrate_total {
             metric.set(summary.total_hashrate as f64);
         }
+    }
+
+    // Clean up stale gauge metrics by removing label combinations that are no longer active
+    // This prevents memory leaks when miners reconnect on different channels
+    // Note: Counter metrics are never cleaned up as they must be monotonically increasing
+
+    // Process server labels first, then release lock before processing client labels
+    if let Ok(mut old_server_labels) = state.server_channel_labels.lock() {
+        cleanup_stale_server_gauges(&old_server_labels, &new_server_labels, &state.metrics);
+        *old_server_labels = new_server_labels;
+    }
+
+    // Process client labels separately to avoid holding multiple locks
+    if let Ok(mut old_client_labels) = state.client_channel_labels.lock() {
+        cleanup_stale_client_gauges(&old_client_labels, &new_client_labels, &state.metrics);
+        *old_client_labels = new_client_labels;
     }
 
     // Encode and return metrics

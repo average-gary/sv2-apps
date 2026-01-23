@@ -4,7 +4,7 @@
 //! and Prometheus scrapes. They represent point-in-time state (gauges) rather than
 //! real-time event counts (counters/histograms in EventMetrics).
 
-use prometheus::{CounterVec, Gauge, GaugeVec, Opts, Registry};
+use prometheus::{Gauge, GaugeVec, Opts, Registry};
 
 /// Snapshot-based metrics populated from cached monitoring state.
 ///
@@ -24,7 +24,6 @@ pub struct SnapshotMetrics {
     pub sv2_server_channels_standard: Option<Gauge>,
     pub sv2_server_hashrate_total: Option<Gauge>,
     pub sv2_server_channel_hashrate: Option<GaugeVec>,
-    pub sv2_server_shares_accepted_total: Option<CounterVec>,
     // Clients metrics (downstream connections)
     pub sv2_clients_total: Option<Gauge>,
     pub sv2_client_channels_total: Option<Gauge>,
@@ -32,7 +31,6 @@ pub struct SnapshotMetrics {
     pub sv2_client_channels_standard: Option<Gauge>,
     pub sv2_client_hashrate_total: Option<Gauge>,
     pub sv2_client_channel_hashrate: Option<GaugeVec>,
-    pub sv2_client_shares_accepted_total: Option<CounterVec>,
     pub sv2_client_channel_shares_per_minute: Option<GaugeVec>,
     // SV1 metrics
     pub sv1_clients_total: Option<Gauge>,
@@ -58,7 +56,6 @@ impl SnapshotMetrics {
             sv2_server_channels_standard,
             sv2_server_hashrate_total,
             sv2_server_channel_hashrate,
-            sv2_server_shares_accepted_total,
         ) = if enable_server_metrics {
             let total = Gauge::new(
                 "sv2_server_channels_total",
@@ -93,25 +90,15 @@ impl SnapshotMetrics {
             )?;
             registry.register(Box::new(channel_hashrate.clone()))?;
 
-            let shares_accepted = CounterVec::new(
-                Opts::new(
-                    "sv2_server_shares_accepted_total",
-                    "Total shares accepted per server channel",
-                ),
-                &["channel_id", "user_identity"],
-            )?;
-            registry.register(Box::new(shares_accepted.clone()))?;
-
             (
                 Some(total),
                 Some(extended),
                 Some(standard),
                 Some(hashrate),
                 Some(channel_hashrate),
-                Some(shares_accepted),
             )
         } else {
-            (None, None, None, None, None, None)
+            (None, None, None, None, None)
         };
 
         // Clients metrics (downstream connections)
@@ -122,7 +109,6 @@ impl SnapshotMetrics {
             sv2_client_channels_standard,
             sv2_client_hashrate_total,
             sv2_client_channel_hashrate,
-            sv2_client_shares_accepted_total,
             sv2_client_channel_shares_per_minute,
         ) = if enable_clients_metrics {
             let clients_total =
@@ -162,15 +148,6 @@ impl SnapshotMetrics {
             )?;
             registry.register(Box::new(channel_hashrate.clone()))?;
 
-            let shares_accepted = CounterVec::new(
-                Opts::new(
-                    "sv2_client_shares_accepted_total",
-                    "Total shares accepted per client channel",
-                ),
-                &["client_id", "channel_id", "user_identity"],
-            )?;
-            registry.register(Box::new(shares_accepted.clone()))?;
-
             let shares_per_minute = GaugeVec::new(
                 Opts::new(
                     "sv2_client_channel_shares_per_minute",
@@ -187,11 +164,10 @@ impl SnapshotMetrics {
                 Some(standard),
                 Some(hashrate),
                 Some(channel_hashrate),
-                Some(shares_accepted),
                 Some(shares_per_minute),
             )
         } else {
-            (None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None)
         };
 
         // SV1 metrics
@@ -215,14 +191,12 @@ impl SnapshotMetrics {
             sv2_server_channels_standard,
             sv2_server_hashrate_total,
             sv2_server_channel_hashrate,
-            sv2_server_shares_accepted_total,
             sv2_clients_total,
             sv2_client_channels_total,
             sv2_client_channels_extended,
             sv2_client_channels_standard,
             sv2_client_hashrate_total,
             sv2_client_channel_hashrate,
-            sv2_client_shares_accepted_total,
             sv2_client_channel_shares_per_minute,
             sv1_clients_total,
             sv1_hashrate_total,
