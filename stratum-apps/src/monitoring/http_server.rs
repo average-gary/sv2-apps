@@ -165,6 +165,13 @@ impl MonitoringServer {
             .unwrap_or_default()
             .as_secs();
 
+        // Determine which metrics to enable based on which monitoring trait objects were provided
+        // This must be based on the parameters, not the snapshot content, because at initialization
+        // time the snapshot may be empty (e.g., translator hasn't connected to pool yet)
+        let has_server = server_monitoring.is_some();
+        let has_clients = clients_monitoring.is_some();
+        let has_sv1 = false; // SV1 monitoring is added later via with_sv1_monitoring()
+
         // Create the snapshot cache
         let cache = Arc::new(super::snapshot_cache::SnapshotCache::new(
             refresh_interval,
@@ -177,12 +184,6 @@ impl MonitoringServer {
 
         // Create cached monitoring wrapper
         let cached = Arc::new(super::snapshot_cache::CachedMonitoring::new(cache.clone()));
-
-        // Determine which metrics to enable based on what the cache has
-        let snapshot = cache.get_snapshot();
-        let has_server = snapshot.server_info.is_some();
-        let has_clients = snapshot.clients_summary.is_some();
-        let has_sv1 = snapshot.sv1_summary.is_some();
 
         let metrics = SnapshotMetrics::new(has_server, has_clients, has_sv1)?;
 
