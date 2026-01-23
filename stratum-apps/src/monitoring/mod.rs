@@ -24,6 +24,7 @@ pub use client::{
     ClientInfo, ClientMetadata, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo,
     StandardChannelInfo,
 };
+pub use event_metrics::ShareRejectionReason;
 pub use http_server::MonitoringServer;
 pub use server::{
     ServerExtendedChannelInfo, ServerInfo, ServerMonitoring, ServerStandardChannelInfo,

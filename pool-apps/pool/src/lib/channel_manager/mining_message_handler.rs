@@ -561,8 +561,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     Ok(ShareValidationResult::Valid(share_hash)) => {
                         // Increment event metrics counter immediately on share acceptance
                         if let Some(ref metrics) = self.event_metrics {
-                            let user_identity = standard_channel.get_user_identity();
-                            metrics.inc_client_shares_accepted(downstream_id, channel_id, user_identity);
+                            metrics.inc_shares_accepted();
                         }
 
                         let share_accounting = standard_channel.get_share_accounting();
@@ -756,8 +755,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     Ok(ShareValidationResult::Valid(share_hash)) => {
                         // Increment event metrics counter immediately on share acceptance
                         if let Some(ref metrics) = self.event_metrics {
-                            let user_identity = extended_channel.get_user_identity();
-                            metrics.inc_client_shares_accepted(downstream_id, channel_id, user_identity);
+                            metrics.inc_shares_accepted();
                         }
 
                         let share_accounting = extended_channel.get_share_accounting();
