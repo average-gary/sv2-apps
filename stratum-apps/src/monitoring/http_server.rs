@@ -237,6 +237,10 @@ impl MonitoringServer {
         mut self,
         sv1_monitoring: Arc<dyn Sv1ClientsMonitoring + Send + Sync + 'static>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        // Check which monitoring types were originally enabled
+        let has_server = self.state.server_monitoring.is_some();
+        let has_clients = self.state.clients_monitoring.is_some();
+
         // Add SV1 source to the cache
         let cache = Arc::new(
             Arc::try_unwrap(self.state.cache)
@@ -247,17 +251,24 @@ impl MonitoringServer {
         // Refresh cache with new SV1 data
         cache.refresh();
 
-        // Update cached monitoring wrapper
+        // Update cached monitoring wrapper - this must be used for ALL monitoring references
         let cached = Arc::new(super::snapshot_cache::CachedMonitoring::new(cache.clone()));
 
         // Re-create metrics with SV1 enabled
-        self.state.metrics = SnapshotMetrics::new(
-            self.state.server_monitoring.is_some(),
-            self.state.clients_monitoring.is_some(),
-            true, // Enable SV1 metrics
-        )?;
+        self.state.metrics = SnapshotMetrics::new(has_server, has_clients, true)?;
 
-        // Update monitoring references
+        // Update ALL monitoring references to use the new cached wrapper
+        // This is critical: the old CachedMonitoring pointed to the old cache
+        self.state.server_monitoring = if has_server {
+            Some(cached.clone() as Arc<dyn ServerMonitoring + Send + Sync>)
+        } else {
+            None
+        };
+        self.state.clients_monitoring = if has_clients {
+            Some(cached.clone() as Arc<dyn ClientsMonitoring + Send + Sync>)
+        } else {
+            None
+        };
         self.state.sv1_monitoring = Some(cached as Arc<dyn Sv1ClientsMonitoring + Send + Sync>);
         self.state.cache = cache;
 
