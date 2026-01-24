@@ -561,7 +561,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     Ok(ShareValidationResult::Valid(share_hash)) => {
                         // Increment event metrics counter immediately on share acceptance
                         if let Some(ref metrics) = self.event_metrics {
-                            metrics.inc_shares_accepted();
+                            metrics.inc_shares_accepted(stratum_apps::monitoring::direction::CLIENT);
                         }
 
                         let share_accounting = standard_channel.get_share_accounting();
@@ -755,7 +755,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     Ok(ShareValidationResult::Valid(share_hash)) => {
                         // Increment event metrics counter immediately on share acceptance
                         if let Some(ref metrics) = self.event_metrics {
-                            metrics.inc_shares_accepted();
+                            metrics.inc_shares_accepted(stratum_apps::monitoring::direction::CLIENT);
                         }
 
                         let share_accounting = extended_channel.get_share_accounting();

@@ -7,23 +7,26 @@
 //! ## Architecture
 //!
 //! - **EventMetrics** is passed to business logic components (e.g., ChannelManager)
-//! - Events trigger immediate counter increments (e.g., `shares_accepted_total.inc()`)
+//! - Events trigger immediate counter increments (e.g., `shares_accepted.inc()`)
 //! - Prometheus scrapes these counters directly from the registry
 //! - No snapshot cache needed for event metrics
 //!
-//! ## Metric Types
+//! ## Consolidated Metrics Design
 //!
-//! - **Counters**: Monotonically increasing values (shares accepted, blocks found)
-//! - **Histograms**: Distribution tracking (share validation latency) - future
-//! - **Gauges**: Use snapshot-based collection in `SnapshotMetrics` (channel counts, hashrate)
+//! Counters use bounded labels to enable dashboard filtering and API linkage:
+//! - `sv2_shares_accepted{direction}` - Shares by direction (2 combinations)
+//! - `sv2_shares_rejected{reason}` - Rejections by reason (7 combinations)
 //!
-//! ## Cardinality
+//! The `direction` label (server/client) maps to API endpoints:
+//! - `direction="server"` → `/api/v1/server/channels`
+//! - `direction="client"` → `/api/v1/client/channels`
 //!
-//! All counters use either no labels or bounded enum labels to prevent cardinality explosion.
-//! Per-channel share data is available via the REST API (`/api/v1/server/channels`,
-//! `/api/v1/client/channels`) for detailed debugging without Prometheus cardinality risk.
+//! Per-channel share data is available via the REST API for detailed debugging.
 
-use prometheus::{Counter, IntCounterVec, Opts, Registry};
+use prometheus::{IntCounterVec, Opts, Registry};
+
+// Re-export direction constants for consistency
+pub use super::snapshot_metrics::direction;
 
 /// Reasons why a share may be rejected.
 ///
@@ -67,15 +70,22 @@ impl ShareRejectionReason {
 /// These metrics are passed to business logic components and incremented
 /// immediately when events happen, providing real-time data to Prometheus.
 ///
-/// All counters use either no labels or bounded enum labels to ensure safe cardinality.
-/// Per-channel share data is available via the REST API for detailed debugging.
+/// Uses consolidated metrics with bounded labels:
+/// - `direction`: "server" (upstream) or "client" (downstream)
+/// - `reason`: bounded enum for rejection reasons
+///
+/// This enables dashboard filtering by direction and API linkage.
 #[derive(Clone)]
 pub struct EventMetrics {
-    /// Total shares accepted across all channels (aggregate, no labels)
-    pub sv2_shares_accepted_total: Counter,
+    /// Shares accepted by direction
+    /// Labels: direction (server|client)
+    /// Cardinality: 2
+    pub sv2_shares_accepted: IntCounterVec,
 
-    /// Total shares rejected by reason (bounded enum labels, max 7 values)
-    pub sv2_shares_rejected_total: IntCounterVec,
+    /// Shares rejected by reason
+    /// Labels: reason (bounded enum, 7 values)
+    /// Cardinality: 7
+    pub sv2_shares_rejected: IntCounterVec,
 }
 
 impl EventMetrics {
@@ -86,50 +96,46 @@ impl EventMetrics {
     /// * `registry` - Prometheus registry to register metrics with
     /// * `_enable_server_metrics` - Unused, kept for API compatibility
     /// * `_enable_clients_metrics` - Unused, kept for API compatibility
-    ///
-    /// Note: The enable flags are kept for backward compatibility but are no longer used.
-    /// All event metrics are now aggregate counters without per-entity labels.
     pub fn new(
         registry: &Registry,
         _enable_server_metrics: bool,
         _enable_clients_metrics: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let sv2_shares_accepted_total = Counter::new(
-            "sv2_shares_accepted_total",
-            "Total shares accepted across all channels (aggregate)",
+        let sv2_shares_accepted = IntCounterVec::new(
+            Opts::new("sv2_shares_accepted", "Shares accepted by direction"),
+            &["direction"],
         )?;
-        registry.register(Box::new(sv2_shares_accepted_total.clone()))?;
+        registry.register(Box::new(sv2_shares_accepted.clone()))?;
 
-        let sv2_shares_rejected_total = IntCounterVec::new(
-            Opts::new(
-                "sv2_shares_rejected_total",
-                "Total shares rejected by reason",
-            ),
+        let sv2_shares_rejected = IntCounterVec::new(
+            Opts::new("sv2_shares_rejected", "Shares rejected by reason"),
             &["reason"],
         )?;
-        registry.register(Box::new(sv2_shares_rejected_total.clone()))?;
+        registry.register(Box::new(sv2_shares_rejected.clone()))?;
 
         Ok(Self {
-            sv2_shares_accepted_total,
-            sv2_shares_rejected_total,
+            sv2_shares_accepted,
+            sv2_shares_rejected,
         })
     }
 
-    /// Increment the aggregate shares accepted counter.
+    /// Increment shares accepted counter for a specific direction.
     ///
-    /// This should be called for every accepted share, regardless of channel.
-    /// Provides simple operational visibility without cardinality concerns.
+    /// # Arguments
+    /// * `direction` - Use `direction::SERVER` or `direction::CLIENT`
     #[inline]
-    pub fn inc_shares_accepted(&self) {
-        self.sv2_shares_accepted_total.inc();
+    pub fn inc_shares_accepted(&self, direction: &str) {
+        self.sv2_shares_accepted
+            .with_label_values(&[direction])
+            .inc();
     }
 
-    /// Increment the shares rejected counter for a specific reason.
+    /// Increment shares rejected counter for a specific reason.
     ///
     /// Uses bounded enum labels to prevent cardinality explosion.
     #[inline]
     pub fn inc_shares_rejected(&self, reason: ShareRejectionReason) {
-        self.sv2_shares_rejected_total
+        self.sv2_shares_rejected
             .with_label_values(&[reason.as_str()])
             .inc();
     }
@@ -140,14 +146,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_aggregate_counter_increment() {
+    fn test_shares_accepted_by_direction() {
         let registry = Registry::new();
         let metrics = EventMetrics::new(&registry, true, true).unwrap();
 
-        metrics.inc_shares_accepted();
-        metrics.inc_shares_accepted();
+        metrics.inc_shares_accepted(direction::SERVER);
+        metrics.inc_shares_accepted(direction::SERVER);
+        metrics.inc_shares_accepted(direction::CLIENT);
 
-        assert_eq!(metrics.sv2_shares_accepted_total.get(), 2.0);
+        let server = metrics
+            .sv2_shares_accepted
+            .with_label_values(&[direction::SERVER])
+            .get();
+        let client = metrics
+            .sv2_shares_accepted
+            .with_label_values(&[direction::CLIENT])
+            .get();
+
+        assert_eq!(server, 2);
+        assert_eq!(client, 1);
+    }
+
+    #[test]
+    fn test_shares_accepted_cardinality_bounded() {
+        let registry = Registry::new();
+        let metrics = EventMetrics::new(&registry, true, true).unwrap();
+
+        metrics.inc_shares_accepted(direction::SERVER);
+        metrics.inc_shares_accepted(direction::CLIENT);
+
+        // Should have exactly 2 label combinations
+        let metric_families = registry.gather();
+        let accepted_family = metric_families
+            .iter()
+            .find(|f| f.get_name() == "sv2_shares_accepted")
+            .unwrap();
+
+        assert_eq!(accepted_family.get_metric().len(), 2);
     }
 
     #[test]
@@ -160,11 +195,11 @@ mod tests {
         metrics.inc_shares_rejected(ShareRejectionReason::InvalidNonce);
 
         let stale = metrics
-            .sv2_shares_rejected_total
+            .sv2_shares_rejected
             .with_label_values(&["stale_share"])
             .get();
         let invalid = metrics
-            .sv2_shares_rejected_total
+            .sv2_shares_rejected
             .with_label_values(&["invalid_nonce"])
             .get();
 
@@ -174,7 +209,6 @@ mod tests {
 
     #[test]
     fn test_rejection_reason_cardinality_bounded() {
-        // Verify all enum variants produce valid label values
         let reasons = [
             ShareRejectionReason::InvalidNonce,
             ShareRejectionReason::InvalidDifficulty,
@@ -192,11 +226,11 @@ mod tests {
             metrics.inc_shares_rejected(reason);
         }
 
-        // Should have exactly 7 label combinations (one per enum variant)
+        // Should have exactly 7 label combinations
         let metric_families = registry.gather();
         let rejected_family = metric_families
             .iter()
-            .find(|f| f.get_name() == "sv2_shares_rejected_total")
+            .find(|f| f.get_name() == "sv2_shares_rejected")
             .unwrap();
 
         assert_eq!(rejected_family.get_metric().len(), 7);
@@ -207,33 +241,15 @@ mod tests {
         let registry = Registry::new();
         let metrics = EventMetrics::new(&registry, true, true).unwrap();
 
-        let mut prev = 0.0;
+        let mut prev = 0;
         for _ in 0..100 {
-            metrics.inc_shares_accepted();
-            let current = metrics.sv2_shares_accepted_total.get();
+            metrics.inc_shares_accepted(direction::SERVER);
+            let current = metrics
+                .sv2_shares_accepted
+                .with_label_values(&[direction::SERVER])
+                .get();
             assert!(current > prev, "Counter must be monotonically increasing");
             prev = current;
         }
-    }
-
-    #[test]
-    fn test_enable_flags_are_ignored() {
-        // The enable flags are kept for API compatibility but no longer used
-        // All metrics are now aggregate counters
-        let registry = Registry::new();
-        let metrics = EventMetrics::new(&registry, false, false).unwrap();
-
-        // Aggregate counters should still work regardless of flags
-        metrics.inc_shares_accepted();
-        assert_eq!(metrics.sv2_shares_accepted_total.get(), 1.0);
-
-        metrics.inc_shares_rejected(ShareRejectionReason::StaleShare);
-        assert_eq!(
-            metrics
-                .sv2_shares_rejected_total
-                .with_label_values(&["stale_share"])
-                .get(),
-            1
-        );
     }
 }

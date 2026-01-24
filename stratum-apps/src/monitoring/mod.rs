@@ -24,13 +24,14 @@ pub use client::{
     ClientInfo, ClientMetadata, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo,
     StandardChannelInfo,
 };
-pub use event_metrics::ShareRejectionReason;
+pub use event_metrics::{direction, ShareRejectionReason};
 pub use http_server::MonitoringServer;
 pub use server::{
     ServerExtendedChannelInfo, ServerInfo, ServerMonitoring, ServerStandardChannelInfo,
     ServerSummary,
 };
 pub use snapshot_cache::{CachedMonitoring, MonitoringSnapshot, SnapshotCache};
+pub use snapshot_metrics::channel_type;
 pub use sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary};
 
 use utoipa::ToSchema;

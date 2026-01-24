@@ -29,3 +29,5 @@ stratum-message-generator
 **/minerd
 bitcoin-core-sv2/Cargo.lock
 docker/docker_env
+docker/*.code-workspace
+.gitignore

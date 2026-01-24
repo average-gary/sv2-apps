@@ -3,45 +3,85 @@
 //! These metrics are populated from the snapshot cache during periodic refreshes
 //! and Prometheus scrapes. They represent point-in-time state (gauges) rather than
 //! real-time event counts (counters/histograms in EventMetrics).
+//!
+//! ## Consolidated Metrics Design
+//!
+//! Metrics use bounded labels to reduce metric count while preserving topology:
+//! - `sv2_channels{direction,type}` - Channel counts (6 combinations: 3 directions × 2 types)
+//! - `sv2_hashrate{direction}` or `sv2_hashrate{direction,user_identity}` - Hashrate
+//! - `sv2_connections{direction}` - Connection counts (3 combinations)
+//!
+//! Direction values: "server", "client", "sv1_client"
+//!
+//! This design enables:
+//! - Prometheus recording rules for aggregates
+//! - Dashboard filtering by direction
+//! - API linkage via direction label
+//! - Optional user_identity breakdown (config-controlled)
 
 use prometheus::{Gauge, GaugeVec, Opts, Registry};
 
+/// Direction label values for metrics
+pub mod direction {
+    pub const SERVER: &str = "server";
+    pub const CLIENT: &str = "client";
+    pub const SV1_CLIENT: &str = "sv1_client";
+}
+
+/// Channel type label values for metrics
+pub mod channel_type {
+    pub const EXTENDED: &str = "extended";
+    pub const STANDARD: &str = "standard";
+}
+
 /// Snapshot-based metrics populated from cached monitoring state.
 ///
-/// These are primarily gauges that represent current state (hashrate, channel counts)
-/// sampled periodically from business logic. Counters in this struct are legacy and
-/// being migrated to EventMetrics for proper event-driven collection.
+/// Uses consolidated metrics with bounded labels:
+/// - `direction`: "server", "client", or "sv1_client"
+/// - `type`: "extended" or "standard" (for channel counts)
+/// - `user_identity`: optional, enabled via config (for hashrate breakdown)
 ///
-/// Metrics are optional - only registered when the corresponding monitoring type is enabled.
+/// This reduces metric count while preserving topology for dashboards and API linkage.
 #[derive(Clone)]
 pub struct SnapshotMetrics {
     pub registry: Registry,
-    // System metrics
+
+    /// Whether user_identity labels are enabled (high cardinality)
+    pub enable_user_identity_labels: bool,
+
+    // === System Metrics (no labels) ===
     pub sv2_uptime_seconds: Gauge,
-    // Server metrics (upstream connection)
-    pub sv2_server_channels_total: Option<Gauge>,
-    pub sv2_server_channels_extended: Option<Gauge>,
-    pub sv2_server_channels_standard: Option<Gauge>,
-    pub sv2_server_hashrate_total: Option<Gauge>,
-    pub sv2_server_channel_hashrate: Option<GaugeVec>,
-    // Clients metrics (downstream connections)
-    pub sv2_clients_total: Option<Gauge>,
-    pub sv2_client_channels_total: Option<Gauge>,
-    pub sv2_client_channels_extended: Option<Gauge>,
-    pub sv2_client_channels_standard: Option<Gauge>,
-    pub sv2_client_hashrate_total: Option<Gauge>,
-    pub sv2_client_channel_hashrate: Option<GaugeVec>,
-    pub sv2_client_channel_shares_per_minute: Option<GaugeVec>,
-    // SV1 metrics
-    pub sv1_clients_total: Option<Gauge>,
-    pub sv1_hashrate_total: Option<Gauge>,
+
+    // === Consolidated Metrics with Labels ===
+    /// Channel counts by direction and type
+    /// Labels: direction (server|client|sv1_client), type (extended|standard)
+    /// Cardinality: 6 (3 directions × 2 types)
+    pub sv2_channels: Option<GaugeVec>,
+
+    /// Hashrate by direction (and optionally user_identity)
+    /// Labels: direction (server|client|sv1_client), [user_identity]
+    /// Cardinality: 3 without user_identity, unbounded with user_identity
+    pub sv2_hashrate: Option<GaugeVec>,
+
+    /// Connection counts by direction
+    /// Labels: direction (server|client|sv1_client)
+    /// Cardinality: 3
+    pub sv2_connections: Option<GaugeVec>,
 }
 
 impl SnapshotMetrics {
+    /// Create new snapshot metrics.
+    ///
+    /// # Arguments
+    /// * `enable_server_metrics` - Enable server (upstream) metrics
+    /// * `enable_clients_metrics` - Enable client (downstream) metrics
+    /// * `enable_sv1_metrics` - Enable SV1 client metrics
+    /// * `enable_user_identity_labels` - Enable user_identity label on hashrate (high cardinality)
     pub fn new(
         enable_server_metrics: bool,
         enable_clients_metrics: bool,
         enable_sv1_metrics: bool,
+        enable_user_identity_labels: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let registry = Registry::new();
 
@@ -49,157 +89,97 @@ impl SnapshotMetrics {
         let sv2_uptime_seconds = Gauge::new("sv2_uptime_seconds", "Server uptime in seconds")?;
         registry.register(Box::new(sv2_uptime_seconds.clone()))?;
 
-        // Server metrics (upstream connection)
-        let (
-            sv2_server_channels_total,
-            sv2_server_channels_extended,
-            sv2_server_channels_standard,
-            sv2_server_hashrate_total,
-            sv2_server_channel_hashrate,
-        ) = if enable_server_metrics {
-            let total = Gauge::new(
-                "sv2_server_channels_total",
-                "Total number of channels opened with the server",
-            )?;
-            registry.register(Box::new(total.clone()))?;
+        // Consolidated metrics (registered if any metrics enabled)
+        let enable_consolidated =
+            enable_server_metrics || enable_clients_metrics || enable_sv1_metrics;
 
-            let extended = Gauge::new(
-                "sv2_server_channels_extended",
-                "Number of extended channels opened with the server",
+        let sv2_channels = if enable_consolidated {
+            let metric = GaugeVec::new(
+                Opts::new("sv2_channels", "Channel counts by direction and type"),
+                &["direction", "type"],
             )?;
-            registry.register(Box::new(extended.clone()))?;
-
-            let standard = Gauge::new(
-                "sv2_server_channels_standard",
-                "Number of standard channels opened with the server",
-            )?;
-            registry.register(Box::new(standard.clone()))?;
-
-            let hashrate = Gauge::new(
-                "sv2_server_hashrate_total",
-                "Total hashrate for channels opened with the server",
-            )?;
-            registry.register(Box::new(hashrate.clone()))?;
-
-            let channel_hashrate = GaugeVec::new(
-                Opts::new(
-                    "sv2_server_channel_hashrate",
-                    "Hashrate for individual server channels",
-                ),
-                &["channel_id", "user_identity"],
-            )?;
-            registry.register(Box::new(channel_hashrate.clone()))?;
-
-            (
-                Some(total),
-                Some(extended),
-                Some(standard),
-                Some(hashrate),
-                Some(channel_hashrate),
-            )
+            registry.register(Box::new(metric.clone()))?;
+            Some(metric)
         } else {
-            (None, None, None, None, None)
+            None
         };
 
-        // Clients metrics (downstream connections)
-        let (
-            sv2_clients_total,
-            sv2_client_channels_total,
-            sv2_client_channels_extended,
-            sv2_client_channels_standard,
-            sv2_client_hashrate_total,
-            sv2_client_channel_hashrate,
-            sv2_client_channel_shares_per_minute,
-        ) = if enable_clients_metrics {
-            let clients_total =
-                Gauge::new("sv2_clients_total", "Total number of connected clients")?;
-            registry.register(Box::new(clients_total.clone()))?;
-
-            let total = Gauge::new(
-                "sv2_client_channels_total",
-                "Total number of channels opened with clients",
-            )?;
-            registry.register(Box::new(total.clone()))?;
-
-            let extended = Gauge::new(
-                "sv2_client_channels_extended",
-                "Number of extended channels opened with clients",
-            )?;
-            registry.register(Box::new(extended.clone()))?;
-
-            let standard = Gauge::new(
-                "sv2_client_channels_standard",
-                "Number of standard channels opened with clients",
-            )?;
-            registry.register(Box::new(standard.clone()))?;
-
-            let hashrate = Gauge::new(
-                "sv2_client_hashrate_total",
-                "Total hashrate for channels opened with clients",
-            )?;
-            registry.register(Box::new(hashrate.clone()))?;
-
-            let channel_hashrate = GaugeVec::new(
-                Opts::new(
-                    "sv2_client_channel_hashrate",
-                    "Hashrate for individual client channels",
-                ),
-                &["client_id", "channel_id", "user_identity"],
-            )?;
-            registry.register(Box::new(channel_hashrate.clone()))?;
-
-            let shares_per_minute = GaugeVec::new(
-                Opts::new(
-                    "sv2_client_channel_shares_per_minute",
-                    "Shares per minute for client channels",
-                ),
-                &["client_id", "channel_id", "user_identity"],
-            )?;
-            registry.register(Box::new(shares_per_minute.clone()))?;
-
-            (
-                Some(clients_total),
-                Some(total),
-                Some(extended),
-                Some(standard),
-                Some(hashrate),
-                Some(channel_hashrate),
-                Some(shares_per_minute),
-            )
+        // Hashrate metric: labels depend on whether user_identity is enabled
+        let sv2_hashrate = if enable_consolidated {
+            let labels: &[&str] = if enable_user_identity_labels {
+                &["direction", "user_identity"]
+            } else {
+                &["direction"]
+            };
+            let metric = GaugeVec::new(Opts::new("sv2_hashrate", "Hashrate by direction"), labels)?;
+            registry.register(Box::new(metric.clone()))?;
+            Some(metric)
         } else {
-            (None, None, None, None, None, None, None)
+            None
         };
 
-        // SV1 metrics
-        let (sv1_clients_total, sv1_hashrate_total) = if enable_sv1_metrics {
-            let clients = Gauge::new("sv1_clients_total", "Total number of SV1 clients")?;
-            registry.register(Box::new(clients.clone()))?;
-
-            let hashrate = Gauge::new("sv1_hashrate_total", "Total hashrate from SV1 clients")?;
-            registry.register(Box::new(hashrate.clone()))?;
-
-            (Some(clients), Some(hashrate))
+        let sv2_connections = if enable_consolidated {
+            let metric = GaugeVec::new(
+                Opts::new("sv2_connections", "Connection counts by direction"),
+                &["direction"],
+            )?;
+            registry.register(Box::new(metric.clone()))?;
+            Some(metric)
         } else {
-            (None, None)
+            None
         };
 
         Ok(Self {
             registry,
+            enable_user_identity_labels,
             sv2_uptime_seconds,
-            sv2_server_channels_total,
-            sv2_server_channels_extended,
-            sv2_server_channels_standard,
-            sv2_server_hashrate_total,
-            sv2_server_channel_hashrate,
-            sv2_clients_total,
-            sv2_client_channels_total,
-            sv2_client_channels_extended,
-            sv2_client_channels_standard,
-            sv2_client_hashrate_total,
-            sv2_client_channel_hashrate,
-            sv2_client_channel_shares_per_minute,
-            sv1_clients_total,
-            sv1_hashrate_total,
+            sv2_channels,
+            sv2_hashrate,
+            sv2_connections,
         })
+    }
+
+    // === Helper methods for setting consolidated metrics ===
+
+    /// Set channel count for a specific direction and type
+    pub fn set_channels(&self, direction: &str, channel_type: &str, count: f64) {
+        if let Some(ref metric) = self.sv2_channels {
+            metric
+                .with_label_values(&[direction, channel_type])
+                .set(count);
+        }
+    }
+
+    /// Set hashrate for a specific direction.
+    /// If user_identity labels are enabled, use `set_hashrate_with_user` instead.
+    pub fn set_hashrate(&self, direction: &str, hashrate: f64) {
+        if let Some(ref metric) = self.sv2_hashrate {
+            if self.enable_user_identity_labels {
+                // When user_identity is enabled, we need to provide it
+                // Use empty string for aggregate hashrate
+                metric.with_label_values(&[direction, ""]).set(hashrate);
+            } else {
+                metric.with_label_values(&[direction]).set(hashrate);
+            }
+        }
+    }
+
+    /// Set hashrate for a specific direction and user_identity.
+    /// Only works when user_identity labels are enabled.
+    pub fn set_hashrate_with_user(&self, direction: &str, user_identity: &str, hashrate: f64) {
+        if let Some(ref metric) = self.sv2_hashrate {
+            if self.enable_user_identity_labels {
+                metric
+                    .with_label_values(&[direction, user_identity])
+                    .set(hashrate);
+            }
+        }
+    }
+
+    /// Set connection count for a specific direction
+    pub fn set_connections(&self, direction: &str, count: f64) {
+        if let Some(ref metric) = self.sv2_connections {
+            metric.with_label_values(&[direction]).set(count);
+        }
     }
 }

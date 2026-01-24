@@ -8,13 +8,10 @@ use super::{
     server::{
         ServerExtendedChannelInfo, ServerMonitoring, ServerStandardChannelInfo, ServerSummary,
     },
-    snapshot_metrics::SnapshotMetrics,
+    snapshot_metrics::{channel_type, direction, SnapshotMetrics},
     sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary},
     GlobalInfo,
 };
-
-mod cleanup;
-use cleanup::{cleanup_stale_client_gauges, cleanup_stale_server_gauges};
 
 use axum::{
     extract::{Path, Query, State},
@@ -185,7 +182,14 @@ impl MonitoringServer {
         // Create cached monitoring wrapper
         let cached = Arc::new(super::snapshot_cache::CachedMonitoring::new(cache.clone()));
 
-        let metrics = SnapshotMetrics::new(has_server, has_clients, has_sv1)?;
+        // TODO: Make enable_user_identity_labels configurable
+        let enable_user_identity_labels = false;
+        let metrics = SnapshotMetrics::new(
+            has_server,
+            has_clients,
+            has_sv1,
+            enable_user_identity_labels,
+        )?;
 
         // Create event metrics using the same registry as SnapshotMetrics
         // EventMetrics registers counter and histogram metrics, SnapshotMetrics only has gauges
@@ -255,7 +259,10 @@ impl MonitoringServer {
         let cached = Arc::new(super::snapshot_cache::CachedMonitoring::new(cache.clone()));
 
         // Re-create metrics with SV1 enabled
-        self.state.metrics = SnapshotMetrics::new(has_server, has_clients, true)?;
+        // Preserve the user_identity_labels setting from the existing metrics
+        let enable_user_identity_labels = self.state.metrics.enable_user_identity_labels;
+        self.state.metrics =
+            SnapshotMetrics::new(has_server, has_clients, true, enable_user_identity_labels)?;
 
         // Update ALL monitoring references to use the new cached wrapper
         // This is critical: the old CachedMonitoring pointed to the old cache
@@ -299,7 +306,8 @@ impl MonitoringServer {
             let mut interval = tokio::time::interval(refresh_interval);
             loop {
                 interval.tick().await;
-                cache_for_refresh.refresh();
+                // Only refresh if stale (respects freshness threshold)
+                cache_for_refresh.refresh_if_stale();
             }
         });
 
@@ -512,6 +520,9 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
     )
 )]
 async fn handle_server(State(state): State<ServerState>) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     match &state.server_monitoring {
         Some(monitoring) => {
             let summary = monitoring.get_server_summary();
@@ -548,6 +559,9 @@ async fn handle_server_channels(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     match &state.server_monitoring {
         Some(monitoring) => {
             let server = monitoring.get_server();
@@ -590,6 +604,9 @@ async fn handle_clients(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     match &state.clients_monitoring {
         Some(monitoring) => {
             let clients: Vec<ClientMetadata> = monitoring
@@ -634,6 +651,9 @@ async fn handle_client_by_id(
     Path(client_id): Path<usize>,
     State(state): State<ServerState>,
 ) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     match &state.clients_monitoring {
         Some(monitoring) => match monitoring.get_client_by_id(client_id) {
             Some(client) => Json(ClientResponse {
@@ -680,6 +700,9 @@ async fn handle_client_channels(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     match &state.clients_monitoring {
         Some(monitoring) => match monitoring.get_client_by_id(client_id) {
             Some(client) => {
@@ -732,6 +755,9 @@ async fn handle_sv1_clients(
     Query(params): Query<Pagination>,
     State(state): State<ServerState>,
 ) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     match &state.sv1_monitoring {
         Some(monitoring) => {
             let clients = monitoring.get_sv1_clients();
@@ -772,6 +798,9 @@ async fn handle_sv1_client_by_id(
     Path(client_id): Path<usize>,
     State(state): State<ServerState>,
 ) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     match &state.sv1_monitoring {
         Some(monitoring) => match monitoring.get_sv1_client_by_id(client_id) {
             Some(client) => Json(client).into_response(),
@@ -798,6 +827,9 @@ async fn handle_sv1_client_by_id(
 /// Collects snapshot-based metrics (gauges) from the cache and event-based metrics
 /// (counters/histograms) from EventMetrics, returning them in Prometheus text format.
 async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response {
+    // Refresh cache if stale beyond freshness threshold
+    state.cache.refresh_if_stale();
+
     let uptime_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -805,150 +837,77 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
         - state.start_time;
     state.metrics.sv2_uptime_seconds.set(uptime_secs as f64);
 
-    // Reset per-channel gauge metrics before repopulating
-    // Note: Counter metrics (shares_accepted) are NOT reset - they only increment
-    if let Some(ref metric) = state.metrics.sv2_client_channel_hashrate {
-        metric.reset();
-    }
-    if let Some(ref metric) = state.metrics.sv2_client_channel_shares_per_minute {
-        metric.reset();
-    }
-    if let Some(ref metric) = state.metrics.sv2_server_channel_hashrate {
-        metric.reset();
-    }
-
-    // Collect server metrics
+    // Clean up stale metrics before repopulating
+    // Collect server metrics using consolidated metrics with labels
     if let Some(monitoring) = &state.server_monitoring {
         let summary = monitoring.get_server_summary();
-        if let Some(ref metric) = state.metrics.sv2_server_channels_total {
-            metric.set(summary.total_channels as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv2_server_channels_extended {
-            metric.set(summary.extended_channels as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv2_server_channels_standard {
-            metric.set(summary.standard_channels as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv2_server_hashrate_total {
-            metric.set(summary.total_hashrate as f64);
-        }
 
-        let server = monitoring.get_server();
+        // Set consolidated channel counts with direction and type labels
+        state.metrics.set_channels(
+            direction::SERVER,
+            channel_type::EXTENDED,
+            summary.extended_channels as f64,
+        );
+        state.metrics.set_channels(
+            direction::SERVER,
+            channel_type::STANDARD,
+            summary.standard_channels as f64,
+        );
 
-        for channel in &server.extended_channels {
-            let channel_id = channel.channel_id.to_string();
-            let user = &channel.user_identity;
+        // Set consolidated hashrate with direction label
+        state
+            .metrics
+            .set_hashrate(direction::SERVER, summary.total_hashrate as f64);
 
-            // Note: shares_accepted counter is incremented in real-time by event metrics
-            // in the message handlers, not here in the snapshot-based collection
-            if let Some(ref metric) = state.metrics.sv2_server_channel_hashrate {
-                metric
-                    .with_label_values(&[&channel_id, user])
-                    .set(channel.nominal_hashrate as f64);
-            }
-        }
-
-        for channel in &server.standard_channels {
-            let channel_id = channel.channel_id.to_string();
-            let user = &channel.user_identity;
-
-            // Note: shares_accepted counter is incremented in real-time by event metrics
-            // in the message handlers, not here in the snapshot-based collection
-            if let Some(ref metric) = state.metrics.sv2_server_channel_hashrate {
-                metric
-                    .with_label_values(&[&channel_id, user])
-                    .set(channel.nominal_hashrate as f64);
-            }
-        }
+        // Set connection count (server is always 1 if connected)
+        state.metrics.set_connections(direction::SERVER, 1.0);
     }
 
-    // Collect clients metrics
+    // Collect clients metrics using consolidated metrics with labels
     if let Some(monitoring) = &state.clients_monitoring {
         let summary = monitoring.get_clients_summary();
-        if let Some(ref metric) = state.metrics.sv2_clients_total {
-            metric.set(summary.total_clients as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv2_client_channels_total {
-            metric.set(summary.total_channels as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv2_client_channels_extended {
-            metric.set(summary.extended_channels as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv2_client_channels_standard {
-            metric.set(summary.standard_channels as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv2_client_hashrate_total {
-            metric.set(summary.total_hashrate as f64);
-        }
 
-        let clients = monitoring.get_clients();
+        // Set consolidated channel counts with direction and type labels
+        state.metrics.set_channels(
+            direction::CLIENT,
+            channel_type::EXTENDED,
+            summary.extended_channels as f64,
+        );
+        state.metrics.set_channels(
+            direction::CLIENT,
+            channel_type::STANDARD,
+            summary.standard_channels as f64,
+        );
 
-        for client in &clients {
-            let client_id = client.client_id.to_string();
+        // Set consolidated hashrate with direction label
+        state
+            .metrics
+            .set_hashrate(direction::CLIENT, summary.total_hashrate as f64);
 
-            for channel in &client.extended_channels {
-                let channel_id = channel.channel_id.to_string();
-                let user = &channel.user_identity;
-
-                // Note: shares_accepted counter is incremented in real-time by event metrics
-                // in the message handlers, not here in the snapshot-based collection
-                if let Some(ref metric) = state.metrics.sv2_client_channel_hashrate {
-                    metric
-                        .with_label_values(&[&client_id, &channel_id, user])
-                        .set(channel.nominal_hashrate as f64);
-                }
-                if let Some(ref metric) = state.metrics.sv2_client_channel_shares_per_minute {
-                    metric
-                        .with_label_values(&[&client_id, &channel_id, user])
-                        .set(channel.shares_per_minute as f64);
-                }
-            }
-
-            for channel in &client.standard_channels {
-                let channel_id = channel.channel_id.to_string();
-                let user = &channel.user_identity;
-
-                // Note: shares_accepted counter is incremented in real-time by event metrics
-                // in the message handlers, not here in the snapshot-based collection
-                if let Some(ref metric) = state.metrics.sv2_client_channel_hashrate {
-                    metric
-                        .with_label_values(&[&client_id, &channel_id, user])
-                        .set(channel.nominal_hashrate as f64);
-                }
-                if let Some(ref metric) = state.metrics.sv2_client_channel_shares_per_minute {
-                    metric
-                        .with_label_values(&[&client_id, &channel_id, user])
-                        .set(channel.shares_per_minute as f64);
-                }
-            }
-        }
+        // Set connection count (number of clients)
+        state
+            .metrics
+            .set_connections(direction::CLIENT, summary.total_clients as f64);
     }
 
-    // Collect SV1 client metrics
+    // Collect SV1 client metrics using consolidated metrics with sv1_client direction
     if let Some(monitoring) = &state.sv1_monitoring {
         let summary = monitoring.get_sv1_clients_summary();
-        if let Some(ref metric) = state.metrics.sv1_clients_total {
-            metric.set(summary.total_clients as f64);
-        }
-        if let Some(ref metric) = state.metrics.sv1_hashrate_total {
-            metric.set(summary.total_hashrate as f64);
-        }
-    }
 
-    // Clean up stale gauge metrics by removing label combinations that are no longer active
-    // This prevents memory leaks when miners reconnect on different channels
-    // Note: Counter metrics are never cleaned up as they must be monotonically increasing
+        // SV1 only has standard channels
+        state.metrics.set_channels(
+            direction::SV1_CLIENT,
+            channel_type::STANDARD,
+            summary.total_clients as f64,
+        );
 
-    // Process server labels first, then release lock before processing client labels
-    if let Ok(mut old_server_labels) = state.server_channel_labels.lock() {
-        cleanup_stale_server_gauges(&old_server_labels, &new_server_labels, &state.metrics);
-        *old_server_labels = new_server_labels;
-    }
+        state
+            .metrics
+            .set_hashrate(direction::SV1_CLIENT, summary.total_hashrate as f64);
 
-    // Process client labels separately to avoid holding multiple locks
-    if let Ok(mut old_client_labels) = state.client_channel_labels.lock() {
-        cleanup_stale_client_gauges(&old_client_labels, &new_client_labels, &state.metrics);
-        *old_client_labels = new_client_labels;
+        state
+            .metrics
+            .set_connections(direction::SV1_CLIENT, summary.total_clients as f64);
     }
 
     // Encode and return metrics
