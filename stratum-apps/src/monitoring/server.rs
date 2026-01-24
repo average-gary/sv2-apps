@@ -71,6 +71,7 @@ pub struct ServerSummary {
     pub extended_channels: usize,
     pub standard_channels: usize,
     pub total_hashrate: f32,
+    pub shares_accepted: u32,
 }
 
 /// Trait for monitoring the server (upstream connection)
@@ -82,11 +83,23 @@ pub trait ServerMonitoring: Send + Sync {
     fn get_server_summary(&self) -> ServerSummary {
         let server = self.get_server();
 
+        let shares_accepted = server
+            .extended_channels
+            .iter()
+            .map(|c| c.shares_accepted)
+            .sum::<u32>()
+            + server
+                .standard_channels
+                .iter()
+                .map(|c| c.shares_accepted)
+                .sum::<u32>();
+
         ServerSummary {
             total_channels: server.total_channels(),
             extended_channels: server.extended_channels.len(),
             standard_channels: server.standard_channels.len(),
             total_hashrate: server.total_hashrate(),
+            shares_accepted,
         }
     }
 }

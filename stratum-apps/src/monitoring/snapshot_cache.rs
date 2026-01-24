@@ -234,6 +234,7 @@ impl ServerMonitoring for CachedMonitoring {
                 extended_channels: 0,
                 standard_channels: 0,
                 total_hashrate: 0.0,
+                shares_accepted: 0,
             })
     }
 }
@@ -261,6 +262,7 @@ impl ClientsMonitoring for CachedMonitoring {
                 extended_channels: 0,
                 standard_channels: 0,
                 total_hashrate: 0.0,
+                shares_accepted: 0,
             })
     }
 }
