@@ -289,6 +289,7 @@ impl Sv1ClientsMonitoring for CachedMonitoring {
             .unwrap_or(Sv1ClientsSummary {
                 total_clients: 0,
                 total_hashrate: 0.0,
+                total_shares: 0,
             })
     }
 }

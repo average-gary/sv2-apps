@@ -20,7 +20,7 @@
 //! - API linkage via direction label
 //! - Optional user_identity breakdown (config-controlled)
 
-use prometheus::{Gauge, GaugeVec, Opts, Registry};
+use prometheus::{GaugeVec, Opts, Registry};
 
 /// Direction label values for metrics
 pub mod direction {
@@ -49,9 +49,6 @@ pub struct SnapshotMetrics {
 
     /// Whether user_identity labels are enabled (high cardinality)
     pub enable_user_identity_labels: bool,
-
-    // === System Metrics (no labels) ===
-    pub stratum_uptime_seconds: Gauge,
 
     // === Consolidated Metrics with Labels ===
     /// Channel counts by direction and type
@@ -90,11 +87,6 @@ impl SnapshotMetrics {
         enable_user_identity_labels: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let registry = Registry::new();
-
-        // System metrics (always enabled)
-        let stratum_uptime_seconds =
-            Gauge::new("stratum_uptime_seconds", "Server uptime in seconds")?;
-        registry.register(Box::new(stratum_uptime_seconds.clone()))?;
 
         // Consolidated metrics (registered if any metrics enabled)
         let enable_consolidated =
@@ -153,7 +145,6 @@ impl SnapshotMetrics {
         Ok(Self {
             registry,
             enable_user_identity_labels,
-            stratum_uptime_seconds,
             stratum_channels,
             stratum_hashrate,
             stratum_connections,

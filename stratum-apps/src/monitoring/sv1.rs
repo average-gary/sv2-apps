@@ -26,6 +26,7 @@ pub struct Sv1ClientInfo {
 pub struct Sv1ClientsSummary {
     pub total_clients: usize,
     pub total_hashrate: f32,
+    pub total_shares: u32,
 }
 
 /// Trait for monitoring SV1 client connections
@@ -50,6 +51,7 @@ pub trait Sv1ClientsMonitoring: Send + Sync {
         Sv1ClientsSummary {
             total_clients: clients.len(),
             total_hashrate: clients.iter().filter_map(|c| c.hashrate).sum(),
+            total_shares: 0,
         }
     }
 }

@@ -834,13 +834,6 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
     // Refresh cache if stale beyond freshness threshold
     state.cache.refresh_if_stale();
 
-    let uptime_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        - state.start_time;
-    state.metrics.stratum_uptime_seconds.set(uptime_secs as f64);
-
     // Clean up stale metrics before repopulating
     // Collect server metrics using consolidated metrics with labels
     if let Some(monitoring) = &state.server_monitoring {
