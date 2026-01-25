@@ -101,7 +101,8 @@ pub struct ClientsSummary {
     pub extended_channels: usize,
     pub standard_channels: usize,
     pub total_hashrate: f32,
-    pub shares_accepted: u32,
+    pub extended_shares: u32,
+    pub standard_shares: u32,
 }
 
 /// Trait for monitoring clients (downstream connections)
@@ -125,14 +126,14 @@ pub trait ClientsMonitoring: Send + Sync {
         let extended: usize = clients.iter().map(|c| c.extended_channels.len()).sum();
         let standard: usize = clients.iter().map(|c| c.standard_channels.len()).sum();
 
-        let shares_accepted = clients
+        let extended_shares = clients
             .iter()
-            .flat_map(|c| {
-                c.extended_channels
-                    .iter()
-                    .map(|ch| ch.shares_accepted)
-                    .chain(c.standard_channels.iter().map(|ch| ch.shares_accepted))
-            })
+            .flat_map(|c| c.extended_channels.iter().map(|ch| ch.shares_accepted))
+            .sum::<u32>();
+
+        let standard_shares = clients
+            .iter()
+            .flat_map(|c| c.standard_channels.iter().map(|ch| ch.shares_accepted))
             .sum::<u32>();
 
         ClientsSummary {
@@ -141,7 +142,8 @@ pub trait ClientsMonitoring: Send + Sync {
             extended_channels: extended,
             standard_channels: standard,
             total_hashrate: clients.iter().map(|c| c.total_hashrate()).sum(),
-            shares_accepted,
+            extended_shares,
+            standard_shares,
         }
     }
 }

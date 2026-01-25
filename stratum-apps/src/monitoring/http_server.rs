@@ -489,7 +489,8 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
             extended_channels: 0,
             standard_channels: 0,
             total_hashrate: 0.0,
-            shares_accepted: 0,
+            extended_shares: 0,
+            standard_shares: 0,
         });
 
     let server = state
@@ -501,7 +502,8 @@ async fn handle_global(State(state): State<ServerState>) -> Json<GlobalInfo> {
             extended_channels: 0,
             standard_channels: 0,
             total_hashrate: 0.0,
-            shares_accepted: 0,
+            extended_shares: 0,
+            standard_shares: 0,
         });
 
     Json(GlobalInfo {
