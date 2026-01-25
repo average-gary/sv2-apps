@@ -1,4 +1,4 @@
-//! Snapshot-based Prometheus metrics for SV2 monitoring.
+//! Snapshot-based Prometheus metrics for Stratum monitoring.
 //!
 //! These metrics are populated from the snapshot cache during periodic refreshes
 //! and Prometheus scrapes. They represent point-in-time state (gauges) rather than
@@ -7,9 +7,10 @@
 //! ## Consolidated Metrics Design
 //!
 //! Metrics use bounded labels to reduce metric count while preserving topology:
-//! - `sv2_channels{direction,type}` - Channel counts (6 combinations: 3 directions × 2 types)
-//! - `sv2_hashrate{direction}` or `sv2_hashrate{direction,user_identity}` - Hashrate
-//! - `sv2_connections{direction}` - Connection counts (3 combinations)
+//! - `stratum_channels{direction,type}` - Channel counts (6 combinations: 3 directions × 2 types)
+//! - `stratum_hashrate{direction}` or `stratum_hashrate{direction,user_identity}` - Hashrate
+//! - `stratum_connections{direction}` - Connection counts (3 combinations)
+//! - `stratum_shares{direction,type}` - Share counts (6 combinations: 3 directions × 2 types)
 //!
 //! Direction values: "server", "client", "sv1_client"
 //!
@@ -50,23 +51,28 @@ pub struct SnapshotMetrics {
     pub enable_user_identity_labels: bool,
 
     // === System Metrics (no labels) ===
-    pub sv2_uptime_seconds: Gauge,
+    pub stratum_uptime_seconds: Gauge,
 
     // === Consolidated Metrics with Labels ===
     /// Channel counts by direction and type
     /// Labels: direction (server|client|sv1_client), type (extended|standard)
     /// Cardinality: 6 (3 directions × 2 types)
-    pub sv2_channels: Option<GaugeVec>,
+    pub stratum_channels: Option<GaugeVec>,
 
     /// Hashrate by direction (and optionally user_identity)
     /// Labels: direction (server|client|sv1_client), [user_identity]
     /// Cardinality: 3 without user_identity, unbounded with user_identity
-    pub sv2_hashrate: Option<GaugeVec>,
+    pub stratum_hashrate: Option<GaugeVec>,
 
     /// Connection counts by direction
     /// Labels: direction (server|client|sv1_client)
     /// Cardinality: 3
-    pub sv2_connections: Option<GaugeVec>,
+    pub stratum_connections: Option<GaugeVec>,
+
+    /// Share counts by direction and type
+    /// Labels: direction (server|client|sv1_client), type (extended|standard)
+    /// Cardinality: 6 (3 directions × 2 types)
+    pub stratum_shares: Option<GaugeVec>,
 }
 
 impl SnapshotMetrics {
@@ -86,16 +92,17 @@ impl SnapshotMetrics {
         let registry = Registry::new();
 
         // System metrics (always enabled)
-        let sv2_uptime_seconds = Gauge::new("sv2_uptime_seconds", "Server uptime in seconds")?;
-        registry.register(Box::new(sv2_uptime_seconds.clone()))?;
+        let stratum_uptime_seconds =
+            Gauge::new("stratum_uptime_seconds", "Server uptime in seconds")?;
+        registry.register(Box::new(stratum_uptime_seconds.clone()))?;
 
         // Consolidated metrics (registered if any metrics enabled)
         let enable_consolidated =
             enable_server_metrics || enable_clients_metrics || enable_sv1_metrics;
 
-        let sv2_channels = if enable_consolidated {
+        let stratum_channels = if enable_consolidated {
             let metric = GaugeVec::new(
-                Opts::new("sv2_channels", "Channel counts by direction and type"),
+                Opts::new("stratum_channels", "Channel counts by direction and type"),
                 &["direction", "type"],
             )?;
             registry.register(Box::new(metric.clone()))?;
@@ -105,23 +112,37 @@ impl SnapshotMetrics {
         };
 
         // Hashrate metric: labels depend on whether user_identity is enabled
-        let sv2_hashrate = if enable_consolidated {
+        let stratum_hashrate = if enable_consolidated {
             let labels: &[&str] = if enable_user_identity_labels {
                 &["direction", "user_identity"]
             } else {
                 &["direction"]
             };
-            let metric = GaugeVec::new(Opts::new("sv2_hashrate", "Hashrate by direction"), labels)?;
+            let metric = GaugeVec::new(
+                Opts::new("stratum_hashrate", "Hashrate by direction"),
+                labels,
+            )?;
             registry.register(Box::new(metric.clone()))?;
             Some(metric)
         } else {
             None
         };
 
-        let sv2_connections = if enable_consolidated {
+        let stratum_connections = if enable_consolidated {
             let metric = GaugeVec::new(
-                Opts::new("sv2_connections", "Connection counts by direction"),
+                Opts::new("stratum_connections", "Connection counts by direction"),
                 &["direction"],
+            )?;
+            registry.register(Box::new(metric.clone()))?;
+            Some(metric)
+        } else {
+            None
+        };
+
+        let stratum_shares = if enable_consolidated {
+            let metric = GaugeVec::new(
+                Opts::new("stratum_shares", "Share counts by direction and type"),
+                &["direction", "type"],
             )?;
             registry.register(Box::new(metric.clone()))?;
             Some(metric)
@@ -132,10 +153,11 @@ impl SnapshotMetrics {
         Ok(Self {
             registry,
             enable_user_identity_labels,
-            sv2_uptime_seconds,
-            sv2_channels,
-            sv2_hashrate,
-            sv2_connections,
+            stratum_uptime_seconds,
+            stratum_channels,
+            stratum_hashrate,
+            stratum_connections,
+            stratum_shares,
         })
     }
 
@@ -143,7 +165,7 @@ impl SnapshotMetrics {
 
     /// Set channel count for a specific direction and type
     pub fn set_channels(&self, direction: &str, channel_type: &str, count: f64) {
-        if let Some(ref metric) = self.sv2_channels {
+        if let Some(ref metric) = self.stratum_channels {
             metric
                 .with_label_values(&[direction, channel_type])
                 .set(count);
@@ -153,7 +175,7 @@ impl SnapshotMetrics {
     /// Set hashrate for a specific direction.
     /// If user_identity labels are enabled, use `set_hashrate_with_user` instead.
     pub fn set_hashrate(&self, direction: &str, hashrate: f64) {
-        if let Some(ref metric) = self.sv2_hashrate {
+        if let Some(ref metric) = self.stratum_hashrate {
             if self.enable_user_identity_labels {
                 // When user_identity is enabled, we need to provide it
                 // Use empty string for aggregate hashrate
@@ -167,7 +189,7 @@ impl SnapshotMetrics {
     /// Set hashrate for a specific direction and user_identity.
     /// Only works when user_identity labels are enabled.
     pub fn set_hashrate_with_user(&self, direction: &str, user_identity: &str, hashrate: f64) {
-        if let Some(ref metric) = self.sv2_hashrate {
+        if let Some(ref metric) = self.stratum_hashrate {
             if self.enable_user_identity_labels {
                 metric
                     .with_label_values(&[direction, user_identity])
@@ -178,8 +200,17 @@ impl SnapshotMetrics {
 
     /// Set connection count for a specific direction
     pub fn set_connections(&self, direction: &str, count: f64) {
-        if let Some(ref metric) = self.sv2_connections {
+        if let Some(ref metric) = self.stratum_connections {
             metric.with_label_values(&[direction]).set(count);
+        }
+    }
+
+    /// Set share count for a specific direction and type
+    pub fn set_shares(&self, direction: &str, channel_type: &str, count: f64) {
+        if let Some(ref metric) = self.stratum_shares {
+            metric
+                .with_label_values(&[direction, channel_type])
+                .set(count);
         }
     }
 }

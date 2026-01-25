@@ -839,7 +839,7 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
         .unwrap_or_default()
         .as_secs()
         - state.start_time;
-    state.metrics.sv2_uptime_seconds.set(uptime_secs as f64);
+    state.metrics.stratum_uptime_seconds.set(uptime_secs as f64);
 
     // Clean up stale metrics before repopulating
     // Collect server metrics using consolidated metrics with labels
@@ -865,6 +865,18 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
 
         // Set connection count (server is always 1 if connected)
         state.metrics.set_connections(direction::SERVER, 1.0);
+
+        // Set share counts by type
+        state.metrics.set_shares(
+            direction::SERVER,
+            channel_type::EXTENDED,
+            summary.extended_shares as f64,
+        );
+        state.metrics.set_shares(
+            direction::SERVER,
+            channel_type::STANDARD,
+            summary.standard_shares as f64,
+        );
     }
 
     // Collect clients metrics using consolidated metrics with labels
@@ -892,6 +904,18 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
         state
             .metrics
             .set_connections(direction::CLIENT, summary.total_clients as f64);
+
+        // Set share counts by type
+        state.metrics.set_shares(
+            direction::CLIENT,
+            channel_type::EXTENDED,
+            summary.extended_shares as f64,
+        );
+        state.metrics.set_shares(
+            direction::CLIENT,
+            channel_type::STANDARD,
+            summary.standard_shares as f64,
+        );
     }
 
     // Collect SV1 client metrics using consolidated metrics with sv1_client direction
@@ -912,6 +936,13 @@ async fn handle_prometheus_metrics(State(state): State<ServerState>) -> Response
         state
             .metrics
             .set_connections(direction::SV1_CLIENT, summary.total_clients as f64);
+
+        // SV1 shares are all standard type
+        state.metrics.set_shares(
+            direction::SV1_CLIENT,
+            channel_type::STANDARD,
+            summary.total_shares as f64,
+        );
     }
 
     // Encode and return metrics
