@@ -10,6 +10,7 @@ use std::{
 use async_channel::{Receiver, Sender};
 use stratum_apps::{
     coinbase_output_constraints::coinbase_output_constraints_message,
+    config_helpers::PublicSoloModeConfig,
     custom_mutex::Mutex,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     network_helpers::noise_stream::NoiseTcpStream,
@@ -255,6 +256,10 @@ pub struct ChannelManager {
     /// 3. Connected: An upstream channel is successfully established.
     /// 4. SoloMining: No upstream is available; the JDC operates in solo mining mode. case.
     pub upstream_state: AtomicUpstreamState,
+    /// Public Solo Mining Mode configuration.
+    /// When enabled, miners provide their Bitcoin address as their username,
+    /// and each channel gets a unique coinbase output with the miner's address.
+    pub public_solo_mode: Option<PublicSoloModeConfig>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -336,6 +341,7 @@ impl ChannelManager {
             miner_tag_string: config.jdc_signature().to_string(),
             user_identity: config.user_identity().to_string(),
             upstream_state: AtomicUpstreamState::new(UpstreamState::SoloMining),
+            public_solo_mode: config.public_solo_mode().cloned(),
         };
 
         Ok(channel_manager)

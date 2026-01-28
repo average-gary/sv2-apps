@@ -5,7 +5,7 @@ use std::{
     str::FromStr,
 };
 use stratum_apps::{
-    config_helpers::{opt_path_from_toml, CoinbaseRewardScript},
+    config_helpers::{opt_path_from_toml, CoinbaseRewardScript, PublicSoloModeConfig},
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     stratum_core::bitcoin::{Amount, TxOut},
     tp_type::TemplateProviderType,
@@ -57,6 +57,11 @@ pub struct JobDeclaratorClientConfig {
     monitoring_address: Option<SocketAddr>,
     #[serde(default = "default_monitoring_cache_refresh_secs")]
     monitoring_cache_refresh_secs: u64,
+    /// Public Solo Mining Mode configuration.
+    /// When enabled, miners provide their Bitcoin address as their username,
+    /// and each channel gets a unique coinbase output with the miner's address.
+    #[serde(default)]
+    pub public_solo_mode: Option<PublicSoloModeConfig>,
 }
 
 fn default_monitoring_cache_refresh_secs() -> u64 {
@@ -102,6 +107,7 @@ impl JobDeclaratorClientConfig {
             required_extensions,
             monitoring_address: None,
             monitoring_cache_refresh_secs: 15,
+            public_solo_mode: None,
         }
     }
 
@@ -197,6 +203,11 @@ impl JobDeclaratorClientConfig {
     /// Returns the required extensions.
     pub fn required_extensions(&self) -> &[u16] {
         &self.required_extensions
+    }
+
+    /// Returns the public solo mode configuration, if enabled.
+    pub fn public_solo_mode(&self) -> Option<&PublicSoloModeConfig> {
+        self.public_solo_mode.as_ref()
     }
 }
 

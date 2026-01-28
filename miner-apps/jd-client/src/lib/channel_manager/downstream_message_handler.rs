@@ -1,9 +1,10 @@
 use std::sync::atomic::Ordering;
 
 use stratum_apps::{
+    config_helpers::{generate_random_channel_tag, validate_solo_address},
     stratum_core::{
         binary_sv2::Str0255,
-        bitcoin::{Amount, Target},
+        bitcoin::{Amount, Target, TxOut},
         channels_sv2::{
             client,
             outputs::deserialize_outputs,
@@ -254,6 +255,49 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
             })
         };
 
+        // In public solo mode, validate the user_identity as a Bitcoin address
+        // and create a per-channel coinbase output for this miner
+        let miner_tag_string = if let Some(ref solo_config) = self.public_solo_mode {
+            // Validate the address
+            let script_pubkey = match validate_solo_address(&user_identity, &solo_config.network) {
+                Ok(script) => script,
+                Err(e) => {
+                    error!(
+                        "Public solo mode: invalid address '{}' from downstream {}: {}",
+                        user_identity, downstream_id, e
+                    );
+                    // Return error to the downstream
+                    let error_msg = build_error("invalid-user-identity");
+                    RouteMessageTo::Downstream((downstream_id, error_msg))
+                        .forward(&self.channel_manager_channel)
+                        .await
+                        .ok();
+                    return Err(JDCError::disconnect(
+                        JDCErrorKind::InvalidUserIdentity(user_identity.to_string()),
+                        downstream_id,
+                    ));
+                }
+            };
+
+            // Replace the first coinbase output with the miner's address
+            coinbase_outputs[0] = TxOut {
+                value: Amount::from_sat(0), // Value will be set later from template
+                script_pubkey,
+            };
+
+            info!(
+                "Public solo mode: channel for {} address '{}' with random tag",
+                solo_config.network, user_identity
+            );
+
+            // Generate a random tag for this channel to disambiguate coinbases
+            // when multiple miners use the same address
+            let random_tag = generate_random_channel_tag();
+            format!("{}:{}", self.miner_tag_string, random_tag)
+        } else {
+            self.miner_tag_string.clone()
+        };
+
         let messages: Vec<RouteMessageTo> =
             self.channel_manager_data
                 .super_safe_lock(|channel_manager_data| {
@@ -324,7 +368,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                 self.shares_per_minute,
                                 job_store,
                                 channel_manager_data.pool_tag_string.clone(),
-                                self.miner_tag_string.clone(),
+                                miner_tag_string.clone(),
                             ) {
                                 Ok(channel) => channel,
                                 Err(e) => {
@@ -499,6 +543,47 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
             })
         };
 
+        // In public solo mode, validate the user_identity as a Bitcoin address
+        // and prepare per-channel coinbase output
+        let (miner_tag_string, solo_mode_script_pubkey) = if let Some(ref solo_config) =
+            self.public_solo_mode
+        {
+            // Validate the address
+            let script_pubkey = match validate_solo_address(&user_identity, &solo_config.network) {
+                Ok(script) => script,
+                Err(e) => {
+                    error!(
+                        "Public solo mode: invalid address '{}' from downstream {}: {}",
+                        user_identity, downstream_id, e
+                    );
+                    // Return error to the downstream
+                    let error_msg = build_error("invalid-user-identity");
+                    RouteMessageTo::Downstream((downstream_id, error_msg))
+                        .forward(&self.channel_manager_channel)
+                        .await
+                        .ok();
+                    return Err(JDCError::disconnect(
+                        JDCErrorKind::InvalidUserIdentity(user_identity.to_string()),
+                        downstream_id,
+                    ));
+                }
+            };
+
+            info!(
+                "Public solo mode: extended channel for {} address '{}' with random tag",
+                solo_config.network, user_identity
+            );
+
+            // Generate a random tag for this channel
+            let random_tag = generate_random_channel_tag();
+            (
+                format!("{}:{}", self.miner_tag_string, random_tag),
+                Some(script_pubkey),
+            )
+        } else {
+            (self.miner_tag_string.clone(), None)
+        };
+
         let messages = self
             .channel_manager_data
             .super_safe_lock(|channel_manager_data| {
@@ -574,7 +659,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                 self.shares_per_minute,
                                 job_store,
                                 channel_manager_data.pool_tag_string.clone(),
-                                self.miner_tag_string.clone(),
+                                miner_tag_string.clone(),
                             ) {
                                 Ok(c) => c,
                                 Err(e) => {
@@ -638,6 +723,17 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                         };
                         coinbase_outputs[0].value =
                             Amount::from_sat(last_future_template.coinbase_tx_value_remaining);
+
+                        // In public solo mode, replace the first coinbase output with
+                        // the miner's address
+                        if let Some(ref script_pubkey) = solo_mode_script_pubkey {
+                            coinbase_outputs[0] = TxOut {
+                                value: Amount::from_sat(
+                                    last_future_template.coinbase_tx_value_remaining,
+                                ),
+                                script_pubkey: script_pubkey.clone(),
+                            };
+                        }
 
                         // create a future extended job based on the last future template
                         if let Err(e) = extended_channel
