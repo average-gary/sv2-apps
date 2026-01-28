@@ -1,0 +1,384 @@
+/* Coinbase Rotation - Minimal Clean Theme */
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --muted: #666666;
+    --accent: #0066cc;
+    --accent-hover: #0052a3;
+    --code-bg: #f6f8fa;
+    --border: #e1e4e8;
+    --highlight-bg: #fff8e6;
+    --warning-bg: #fff3cd;
+    --warning-border: #ffc107;
+    --callout-bg: #e7f3ff;
+    --callout-border: #0066cc;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0d1117;
+        --text: #c9d1d9;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --accent-hover: #79b8ff;
+        --code-bg: #161b22;
+        --border: #30363d;
+        --highlight-bg: #3d2e00;
+        --warning-bg: #3d2e00;
+        --warning-border: #d29922;
+        --callout-bg: #1a3a52;
+        --callout-border: #58a6ff;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 16px;
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    color: var(--text);
+    background-color: var(--bg);
+    margin: 0;
+    padding: 0;
+}
+
+/* Layout */
+header, main, footer {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+header {
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 2rem;
+    margin-bottom: 2rem;
+}
+
+/* Typography */
+h1 {
+    font-size: 2rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 2.5rem 0 1rem 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+h3 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin: 1.5rem 0 0.75rem 0;
+}
+
+h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 1rem 0 0.5rem 0;
+}
+
+p {
+    margin: 0 0 1rem 0;
+}
+
+.tagline {
+    color: var(--muted);
+    font-size: 1.1rem;
+    margin-bottom: 1.5rem;
+}
+
+/* Links */
+a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+}
+
+/* Navigation */
+nav {
+    display: flex;
+    gap: 1.5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+nav a {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    transition: border-color 0.2s;
+}
+
+nav a:hover {
+    border-color: var(--accent);
+    text-decoration: none;
+}
+
+/* Code */
+code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background-color: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+}
+
+pre {
+    background-color: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1rem 0;
+}
+
+pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+/* Log output styling */
+.log-output {
+    margin: 1.5rem 0;
+}
+
+.log-output pre {
+    background-color: #1a1a1a;
+    color: #e6e6e6;
+    border: none;
+}
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+}
+
+th, td {
+    padding: 0.75rem;
+    text-align: left;
+    border: 1px solid var(--border);
+}
+
+th {
+    background-color: var(--code-bg);
+    font-weight: 600;
+}
+
+tr.highlight {
+    background-color: var(--highlight-bg);
+}
+
+/* Callouts */
+.callout {
+    background-color: var(--callout-bg);
+    border-left: 4px solid var(--callout-border);
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    border-radius: 0 6px 6px 0;
+}
+
+.callout h4 {
+    margin-top: 0;
+}
+
+.callout p:last-child {
+    margin-bottom: 0;
+}
+
+.callout.warning {
+    background-color: var(--warning-bg);
+    border-left-color: var(--warning-border);
+}
+
+/* Notes */
+.note {
+    color: var(--muted);
+    font-size: 0.9rem;
+    font-style: italic;
+}
+
+/* Definition lists */
+dl {
+    margin: 1rem 0;
+}
+
+dt {
+    font-weight: 600;
+    margin-top: 1rem;
+}
+
+dt code {
+    font-weight: 600;
+}
+
+dd {
+    margin: 0.25rem 0 0 0;
+    padding-left: 1rem;
+    color: var(--muted);
+}
+
+dd code {
+    font-size: 0.85em;
+}
+
+/* Details/Summary (collapsible) */
+details {
+    margin: 1.5rem 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+summary {
+    padding: 1rem;
+    background-color: var(--code-bg);
+    cursor: pointer;
+    font-weight: 600;
+    user-select: none;
+}
+
+summary:hover {
+    background-color: var(--border);
+}
+
+details[open] summary {
+    border-bottom: 1px solid var(--border);
+}
+
+details > *:not(summary) {
+    padding: 0 1rem;
+}
+
+details h4 {
+    margin-top: 1.5rem;
+}
+
+details h4:first-of-type {
+    margin-top: 1rem;
+}
+
+/* Mermaid diagrams */
+.mermaid {
+    margin: 1.5rem 0;
+    text-align: center;
+}
+
+/* Lists */
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+/* Sections */
+section {
+    margin-bottom: 3rem;
+}
+
+section:first-of-type h2 {
+    margin-top: 0;
+}
+
+/* Footer */
+footer {
+    border-top: 1px solid var(--border);
+    margin-top: 3rem;
+    padding-top: 2rem;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+footer p {
+    margin: 0.5rem 0;
+}
+
+footer a {
+    color: var(--muted);
+}
+
+footer a:hover {
+    color: var(--accent);
+}
+
+.updated {
+    font-size: 0.85rem;
+    margin-top: 1rem;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    html {
+        font-size: 14px;
+    }
+
+    header, main, footer {
+        padding: 1.5rem 1rem;
+    }
+
+    table {
+        font-size: 0.8rem;
+    }
+
+    th, td {
+        padding: 0.5rem;
+    }
+
+    pre {
+        padding: 0.75rem;
+    }
+
+    pre code {
+        font-size: 0.8rem;
+    }
+}
+
+/* Print styles */
+@media print {
+    body {
+        font-size: 12pt;
+    }
+
+    header, footer {
+        text-align: left;
+    }
+
+    nav, .mermaid {
+        display: none;
+    }
+
+    a {
+        color: inherit;
+        text-decoration: underline;
+    }
+
+    pre, code {
+        background: #f5f5f5 !important;
+    }
+}
