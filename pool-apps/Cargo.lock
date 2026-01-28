@@ -272,8 +272,8 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "binary_sv2"
-version = "5.0.1"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "5.0.0"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "buffer_sv2",
  "derive_codec_sv2",
@@ -418,10 +418,11 @@ dependencies = [
 
 [[package]]
 name = "buffer_sv2"
-version = "3.0.1"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "2.0.0"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "aes-gcm",
+ "generic-array",
 ]
 
 [[package]]
@@ -530,11 +531,12 @@ dependencies = [
 
 [[package]]
 name = "channels_sv2"
-version = "3.0.1"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "3.0.0"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
  "bitcoin",
+ "common_messages_sv2",
  "mining_sv2",
  "primitive-types",
  "template_distribution_sv2",
@@ -600,8 +602,8 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "codec_sv2"
-version = "4.0.1"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "4.0.0"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
  "buffer_sv2",
@@ -628,8 +630,8 @@ dependencies = [
 
 [[package]]
 name = "common_messages_sv2"
-version = "7.0.0"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "6.0.2"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
 ]
@@ -783,7 +785,7 @@ dependencies = [
 [[package]]
 name = "derive_codec_sv2"
 version = "1.1.2"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 
 [[package]]
 name = "digest"
@@ -912,7 +914,7 @@ checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 [[package]]
 name = "extensions_sv2"
 version = "0.1.0"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
 ]
@@ -973,8 +975,8 @@ dependencies = [
 
 [[package]]
 name = "framing_sv2"
-version = "6.0.1"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "6.0.0"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
  "buffer_sv2",
@@ -1109,8 +1111,8 @@ dependencies = [
 
 [[package]]
 name = "handlers_sv2"
-version = "0.2.2"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "0.2.1"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
  "common_messages_sv2",
@@ -1499,7 +1501,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 [[package]]
 name = "job_declaration_sv2"
 version = "6.0.0"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
 ]
@@ -1620,7 +1622,7 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 [[package]]
 name = "mining_sv2"
 version = "7.0.0"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
 ]
@@ -1659,12 +1661,14 @@ dependencies = [
 
 [[package]]
 name = "noise_sv2"
-version = "1.4.2"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "1.4.1"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
+ "generic-array",
  "rand",
+ "rand_chacha",
  "secp256k1 0.28.2",
 ]
 
@@ -1783,8 +1787,8 @@ dependencies = [
 
 [[package]]
 name = "parsers_sv2"
-version = "0.2.2"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "0.2.1"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
  "common_messages_sv2",
@@ -1895,6 +1899,8 @@ dependencies = [
  "config",
  "hex",
  "hotpath",
+ "rand",
+ "secp256k1 0.28.2",
  "serde",
  "stratum-apps",
  "tokio",
@@ -2419,9 +2425,12 @@ dependencies = [
  "async-channel",
  "axum",
  "bs58",
+ "clap",
  "config",
  "dirs",
  "futures",
+ "generic-array",
+ "hex",
  "miniscript",
  "prometheus",
  "rand",
@@ -2441,8 +2450,8 @@ dependencies = [
 
 [[package]]
 name = "stratum-core"
-version = "0.2.1"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "0.2.0"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
  "bitcoin",
@@ -2508,8 +2517,8 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "template_distribution_sv2"
-version = "5.0.0"
-source = "git+https://github.com/stratum-mining/stratum?branch=main#c05fd9966b7a66ea8016b7463c859e8e35a5c77a"
+version = "4.0.2"
+source = "git+https://github.com/stratum-mining/stratum?branch=main#855ed9fe7c8aad1160043fecd365ed5c3c2429c2"
 dependencies = [
  "binary_sv2",
 ]

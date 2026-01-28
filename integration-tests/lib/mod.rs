@@ -392,3 +392,77 @@ pub fn start_sv1_sniffer(upstream_address: SocketAddr) -> (sv1_sniffer::SnifferS
     sniffer_sv1.start();
     (sniffer_sv1, listening_address)
 }
+
+/// Starts the SV2 translator with public solo mode enabled.
+///
+/// In public solo mode:
+/// - Miners must provide a valid Bitcoin address as their stratum username
+/// - The address is validated against the configured network (e.g., "testnet4", "regtest")
+/// - Mainnet addresses are always rejected for safety
+pub async fn start_sv2_translator_public_solo_mode(
+    upstreams: &[SocketAddr],
+    network: &str,
+) -> (TranslatorSv2, SocketAddr) {
+    use stratum_apps::config_helpers::PublicSoloModeConfig;
+
+    let upstreams_config: Vec<_> = upstreams
+        .iter()
+        .map(|upstream| {
+            let upstream_address = upstream.ip().to_string();
+            let upstream_port = upstream.port();
+            let upstream_authority_pubkey = Secp256k1PublicKey::try_from(
+                "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72".to_string(),
+            )
+            .expect("failed");
+
+            translator_sv2::config::Upstream::new(
+                upstream_address,
+                upstream_port,
+                upstream_authority_pubkey,
+            )
+        })
+        .collect();
+
+    let listening_address = get_available_address();
+    let listening_port = listening_address.port();
+
+    let minerd_process = MinerdProcess::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), false)
+        .await
+        .unwrap();
+    let min_individual_miner_hashrate = minerd_process.measure_hashrate().await.unwrap() as f32;
+
+    let downstream_difficulty_config = translator_sv2::config::DownstreamDifficultyConfig::new(
+        min_individual_miner_hashrate,
+        SHARES_PER_MINUTE,
+        true,
+        60, // job_keepalive_interval_secs
+    );
+
+    let downstream_extranonce2_size = 4;
+
+    let mut config = translator_sv2::config::TranslatorConfig::new(
+        upstreams_config,
+        listening_address.ip().to_string(),
+        listening_port,
+        downstream_difficulty_config,
+        2,
+        2,
+        downstream_extranonce2_size,
+        "public_solo".to_string(), // user_identity (not used in public_solo_mode)
+        false,                     // aggregate_channels
+        vec![],                    // supported_extensions (disable 0x0002 for address > 32 bytes)
+        vec![],                    // required_extensions
+    );
+
+    // Enable public solo mode with the specified network
+    config.set_public_solo_mode(PublicSoloModeConfig {
+        network: network.to_string(),
+    });
+
+    let translator_v2 = translator_sv2::TranslatorSv2::new(config);
+    let clone_translator_v2 = translator_v2.clone();
+    tokio::spawn(async move {
+        clone_translator_v2.start().await;
+    });
+    (translator_v2, listening_address)
+}
