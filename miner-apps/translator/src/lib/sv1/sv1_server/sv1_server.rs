@@ -332,6 +332,11 @@ impl Sv1Server {
             .await
             .map_err(TproxyError::shutdown)?;
 
+        debug!(
+            "Down: Received message from downstream {}: {:?}",
+            downstream_id, downstream_message
+        );
+
         let downstream = self.downstreams.get(&downstream_id);
 
         if let Some(downstream) = downstream {
@@ -342,13 +347,100 @@ impl Sv1Server {
                 let is_first_message = downstream
                     .downstream_data
                     .super_safe_lock(|d| d.queued_sv1_handshake_messages.is_empty());
-                if is_first_message {
+
+                // Open channel on first message in normal mode.
+                // In public_solo_mode, defer channel opening until mining.authorize
+                // so we have the miner's Bitcoin address for the channel user_identity.
+                if is_first_message && self.config.public_solo_mode.is_none() {
                     self.handle_open_channel_request(downstream_id).await?;
                     debug!(
                         "Down: Sent OpenChannel request for downstream {}",
                         downstream_id
                     );
                 }
+                // In public_solo_mode, we need to handle the SV1 handshake messages
+                // (mining.configure, mining.subscribe, mining.authorize) before opening the channel.
+                // The channel is opened after mining.authorize so we have the miner's Bitcoin address.
+                if self.config.public_solo_mode.is_some() {
+                    if let json_rpc::Message::StandardRequest(request) = &downstream_message {
+                        match request.method.as_str() {
+                            "mining.configure" | "mining.subscribe" => {
+                                debug!(
+                                    "Down: Processing {} during handshake for public_solo_mode",
+                                    request.method
+                                );
+                                // Process and respond to these messages before channel is opened
+                                let response = self.clone().handle_message(
+                                    Some(downstream_id),
+                                    downstream_message.clone(),
+                                );
+
+                                if let Ok(Some(response_msg)) = response {
+                                    downstream
+                                        .downstream_channel_state
+                                        .downstream_sv1_sender
+                                        .send(response_msg.into())
+                                        .await
+                                        .map_err(|error| {
+                                            error!(
+                                                "Down: Failed to send {} response: {error:?}",
+                                                request.method
+                                            );
+                                            TproxyError::disconnect(
+                                                TproxyErrorKind::ChannelErrorSender,
+                                                downstream_id,
+                                            )
+                                        })?;
+                                }
+
+                                // Don't queue - we've already responded to this message.
+                                // Queuing would cause duplicate responses when replayed.
+                                return Ok(());
+                            }
+                            "mining.authorize" => {
+                                debug!("Down: Processing mining.authorize during handshake for public_solo_mode");
+                                // Process the authorize message to validate and store the address
+                                let response = self.clone().handle_message(
+                                    Some(downstream_id),
+                                    downstream_message.clone(),
+                                );
+
+                                // Send authorize response to downstream
+                                if let Ok(Some(response_msg)) = response {
+                                    downstream
+                                        .downstream_channel_state
+                                        .downstream_sv1_sender
+                                        .send(response_msg.into())
+                                        .await
+                                        .map_err(|error| {
+                                            error!(
+                                                "Down: Failed to send authorize response: {error:?}"
+                                            );
+                                            TproxyError::disconnect(
+                                                TproxyErrorKind::ChannelErrorSender,
+                                                downstream_id,
+                                            )
+                                        })?;
+                                }
+
+                                // Now open the channel with the miner's address
+                                self.handle_open_channel_request(downstream_id).await?;
+                                debug!(
+                                    "Down: Sent OpenChannel request for downstream {} after mining.authorize",
+                                    downstream_id
+                                );
+
+                                // Don't queue - we've already responded to this message.
+                                // Queuing would cause duplicate responses when replayed.
+                                return Ok(());
+                            }
+                            _ => {
+                                // Other messages get queued normally
+                            }
+                        }
+                    }
+                }
+
                 debug!("Down: Queuing Sv1 message until channel is established");
                 downstream.downstream_data.super_safe_lock(|data| {
                     data.queued_sv1_handshake_messages
@@ -463,8 +555,12 @@ impl Sv1Server {
         )
         .map_err(|_| TproxyError::shutdown(TproxyErrorKind::SV1Error))?;
 
-        // Only add TLV fields with user identity in non-aggregated mode
-        let tlv_fields = if is_non_aggregated() {
+        // Only add TLV fields with user identity in non-aggregated mode.
+        // Skip UserIdentity TLV when public_solo_mode is enabled because:
+        // - UserIdentity TLV is limited to 32 bytes
+        // - Testnet4 bech32 addresses are ~44 characters and would be truncated
+        // - The full address is passed via user_identity in OpenStandardMiningChannel (Str0255)
+        let tlv_fields = if is_non_aggregated() && self.config.public_solo_mode.is_none() {
             let user_identity_string = self
                 .downstreams
                 .get(&message.downstream_id)
@@ -623,6 +719,22 @@ impl Sv1Server {
                         }
                     }
 
+                    // In public_solo_mode, the SV1 handshake messages (configure, subscribe, authorize)
+                    // were already processed and responded to before opening the channel.
+                    // Now that the channel is established, we need to mark the handshake complete
+                    // so that mining.notify and mining.set_difficulty messages will be forwarded
+                    // to the downstream instead of being cached.
+                    if self.config.public_solo_mode.is_some() {
+                        debug!(
+                            "Public solo mode: Completing SV1 handshake for downstream {}",
+                            downstream_id
+                        );
+                        downstream.downstream_data.super_safe_lock(|d| {
+                            d.sv1_handshake_complete
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                        });
+                    }
+
                     let set_difficulty = build_sv1_set_difficulty_from_sv2_target(first_target)
                         .map_err(|_| {
                             TproxyError::shutdown(TproxyErrorKind::General(
@@ -641,12 +753,16 @@ impl Sv1Server {
 
             Mining::NewExtendedMiningJob(m) => {
                 debug!(
-                    "Received NewExtendedMiningJob for channel id: {}",
-                    m.channel_id
+                    "SV1Server: NewExtendedMiningJob for channel {} job_id {}",
+                    m.channel_id, m.job_id
                 );
                 if let Some(prevhash) = self.prevhashes.get(&m.channel_id) {
                     let prevhash = prevhash.as_static();
                     let clean_jobs = m.job_id == prevhash.job_id;
+                    debug!(
+                        "SV1Server: Building notify for channel {} (prevhash found, clean_jobs={})",
+                        m.channel_id, clean_jobs
+                    );
                     let notify =
                         build_sv1_notify_from_sv2(prevhash, m.clone().into_static(), clean_jobs)
                             .map_err(TproxyError::shutdown)?;
@@ -665,10 +781,19 @@ impl Sv1Server {
                     }
                     channel_jobs.push(notify_parsed);
 
+                    debug!(
+                        "SV1Server: Broadcasting mining.notify for channel {}",
+                        m.channel_id
+                    );
                     let _ = self
                         .sv1_server_channel_state
                         .sv1_server_to_downstream_sender
                         .send((m.channel_id, None, notify.into()));
+                } else {
+                    debug!(
+                        "SV1Server: No prevhash for channel {}, skipping notify",
+                        m.channel_id
+                    );
                 }
             }
 
@@ -732,13 +857,24 @@ impl Sv1Server {
             Target::from_le_bytes([0xff; 32])
         };
 
-        let miner_id = self.miner_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let user_identity = format!("{}.miner{}", self.config.user_identity, miner_id);
-
-        downstream
-            .downstream_data
-            .safe_lock(|d| d.user_identity = user_identity.clone())
-            .map_err(TproxyError::shutdown)?;
+        // Determine user_identity for the channel:
+        // - In public_solo_mode: use the miner's Bitcoin address (already validated and stored
+        //   in downstream_data.user_identity during mining.authorize)
+        // - In normal mode: use config.user_identity with a miner counter
+        let user_identity = if self.config.public_solo_mode.is_some() {
+            // Get the miner's address that was set during mining.authorize
+            downstream
+                .downstream_data
+                .super_safe_lock(|d| d.user_identity.clone())
+        } else {
+            let miner_id = self.miner_counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let identity = format!("{}.miner{}", self.config.user_identity, miner_id);
+            downstream
+                .downstream_data
+                .safe_lock(|d| d.user_identity = identity.clone())
+                .map_err(TproxyError::shutdown)?;
+            identity
+        };
 
         if let Ok(open_channel_msg) = build_sv2_open_extended_mining_channel(
             request_id,

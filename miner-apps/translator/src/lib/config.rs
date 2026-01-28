@@ -10,12 +10,13 @@
 //! - Downstream interface address and port ([`DownstreamConfig`])
 //! - Supported protocol versions
 //! - Downstream difficulty adjustment parameters ([`DownstreamDifficultyConfig`])
+//! - Public solo mining mode configuration ([`PublicSoloModeConfig`])
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use std::net::SocketAddr;
 use stratum_apps::{
-    config_helpers::opt_path_from_toml,
+    config_helpers::{opt_path_from_toml, PublicSoloModeConfig},
     key_utils::Secp256k1PublicKey,
     utils::types::{Hashrate, SharesPerMinute},
 };
@@ -57,6 +58,16 @@ pub struct TranslatorConfig {
     monitoring_address: Option<SocketAddr>,
     #[serde(default = "default_monitoring_cache_refresh_secs")]
     monitoring_cache_refresh_secs: u64,
+    /// Public solo mining mode configuration.
+    ///
+    /// When enabled:
+    /// - Miners must provide a valid Bitcoin address as their stratum username
+    /// - The address is validated against the configured network
+    /// - Mainnet addresses are always rejected for safety
+    /// - The UserIdentity TLV (extension 0x0002) is disabled
+    /// - Failed authorization attempts are tracked; 2 failures cause disconnect
+    #[serde(default)]
+    pub public_solo_mode: Option<PublicSoloModeConfig>,
 }
 
 fn default_monitoring_cache_refresh_secs() -> u64 {
@@ -116,7 +127,28 @@ impl TranslatorConfig {
             log_file: None,
             monitoring_address: None,
             monitoring_cache_refresh_secs: 15,
+            public_solo_mode: None,
         }
+    }
+
+    /// Returns true if public solo mining mode is enabled.
+    pub fn is_public_solo_mode(&self) -> bool {
+        self.public_solo_mode.is_some()
+    }
+
+    /// Returns the public solo mode configuration if enabled.
+    pub fn public_solo_mode(&self) -> Option<&PublicSoloModeConfig> {
+        self.public_solo_mode.as_ref()
+    }
+
+    /// Sets the public solo mode configuration.
+    ///
+    /// When enabled:
+    /// - Miners must provide a valid Bitcoin address as their stratum username
+    /// - The address is validated against the configured network
+    /// - Mainnet addresses are always rejected for safety
+    pub fn set_public_solo_mode(&mut self, config: PublicSoloModeConfig) {
+        self.public_solo_mode = Some(config);
     }
 
     /// Returns the monitoring server bind address (if enabled)

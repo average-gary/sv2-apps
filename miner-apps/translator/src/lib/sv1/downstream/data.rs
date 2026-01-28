@@ -1,4 +1,7 @@
-use std::time::Instant;
+use std::{
+    sync::atomic::{AtomicBool, AtomicU8},
+    time::Instant,
+};
 use stratum_apps::{
     stratum_core::{
         bitcoin::Target,
@@ -12,6 +15,10 @@ use stratum_apps::{
 use tracing::debug;
 
 use super::SubmitShareWithChannelId;
+
+/// Maximum number of failed authorization attempts before disconnecting
+/// in public solo mode. After this many failures, the downstream will be disconnected.
+pub const MAX_FAILED_AUTH_ATTEMPTS: u8 = 2;
 
 #[derive(Debug)]
 pub struct DownstreamData {
@@ -37,6 +44,11 @@ pub struct DownstreamData {
     pub upstream_target: Option<Target>,
     // Timestamp of when the last job was received by this downstream, used for keepalive check
     pub last_job_received_time: Option<Instant>,
+    /// Counter for failed authorization attempts in public solo mode.
+    /// After MAX_FAILED_AUTH_ATTEMPTS, the downstream will be disconnected.
+    pub failed_auth_attempts: AtomicU8,
+    /// Flag to indicate this downstream should be disconnected due to too many failed auth attempts.
+    pub should_disconnect: AtomicBool,
 }
 
 impl DownstreamData {
@@ -62,7 +74,28 @@ impl DownstreamData {
             pending_share: None,
             upstream_target: None,
             last_job_received_time: None,
+            failed_auth_attempts: AtomicU8::new(0),
+            should_disconnect: AtomicBool::new(false),
         }
+    }
+
+    /// Increments the failed authorization attempts counter.
+    /// Returns true if the downstream should be disconnected.
+    pub fn increment_failed_auth_attempts(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let attempts = self.failed_auth_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempts >= MAX_FAILED_AUTH_ATTEMPTS {
+            self.should_disconnect.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if this downstream should be disconnected.
+    pub fn should_disconnect(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.should_disconnect.load(Ordering::SeqCst)
     }
 
     pub fn set_pending_target(&mut self, new_target: Target, downstream_id: DownstreamId) {

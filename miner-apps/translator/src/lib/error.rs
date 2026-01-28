@@ -172,6 +172,8 @@ pub enum TproxyErrorKind {
     InvalidMerkleRoot,
     /// Pending channel not found for the given request ID
     PendingChannelNotFound(u32),
+    /// Pending channel request timed out (upstream connection likely stale)
+    PendingChannelTimeout(u32),
     /// Server does not support required extensions
     RequiredExtensionsNotSupported(Vec<u16>),
     /// Server requires extensions that the translator doesn't support
@@ -239,6 +241,13 @@ impl fmt::Display for TproxyErrorKind {
             InvalidMerkleRoot => write!(f, "Invalid merkle root during share validation"),
             PendingChannelNotFound(request_id) => {
                 write!(f, "No pending channel found for request_id: {}", request_id)
+            }
+            PendingChannelTimeout(request_id) => {
+                write!(
+                    f,
+                    "Pending channel request {} timed out - upstream connection stale",
+                    request_id
+                )
             }
             RequiredExtensionsNotSupported(extensions) => {
                 write!(

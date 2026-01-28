@@ -1,10 +1,13 @@
-use stratum_apps::stratum_core::sv1_api::{
-    client_to_server, json_rpc,
-    server_to_client::{self, Notify},
-    utils::{Extranonce, HexU32Be},
-    IsServer,
+use stratum_apps::{
+    config_helpers::{extract_address_from_username, validate_solo_address},
+    stratum_core::sv1_api::{
+        client_to_server, json_rpc,
+        server_to_client::{self, Notify},
+        utils::{Extranonce, HexU32Be},
+        IsServer,
+    },
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     error, is_aggregated,
@@ -89,7 +92,48 @@ impl IsServer<'static> for Sv1Server {
         let downstream_id = client_id.expect("Downstream id should exist");
         info!("Received mining.authorize from Sv1 downstream {downstream_id}");
         debug!("Down: Handling mining.authorize: {:?}", request);
-        true
+
+        // If public solo mode is enabled, validate the username as a Bitcoin address
+        if let Some(ref solo_config) = self.config.public_solo_mode {
+            let username = &request.name;
+            match validate_solo_address(username, &solo_config.network) {
+                Ok(_script) => {
+                    info!(
+                        "Public solo mode: valid {} address '{}' from downstream {}",
+                        solo_config.network, username, downstream_id
+                    );
+                    true
+                }
+                Err(e) => {
+                    error!(
+                        "Public solo mode: invalid address '{}' from downstream {}: {}",
+                        username, downstream_id, e
+                    );
+
+                    // Track failed attempts and check if we should disconnect
+                    let downstream = self
+                        .downstreams
+                        .get(&downstream_id)
+                        .expect("Downstream should exist");
+
+                    let should_disconnect = downstream
+                        .downstream_data
+                        .super_safe_lock(|data| data.increment_failed_auth_attempts());
+
+                    if should_disconnect {
+                        warn!(
+                            "Public solo mode: disconnecting downstream {} after too many failed auth attempts",
+                            downstream_id
+                        );
+                    }
+
+                    false
+                }
+            }
+        } else {
+            // Normal mode: accept any username
+            true
+        }
     }
 
     fn handle_submit(
@@ -200,11 +244,20 @@ impl IsServer<'static> for Sv1Server {
             .expect("Downstream should exist");
 
         let is_authorized = self.is_authorized(client_id, name);
+
+        // In public_solo_mode, extract just the address (strip worker suffix)
+        // for the user_identity that will be sent to JDC
+        let user_identity = if self.config.public_solo_mode.is_some() {
+            extract_address_from_username(name).to_string()
+        } else {
+            name.to_string()
+        };
+
         downstream.downstream_data.super_safe_lock(|data| {
             if !is_authorized {
                 data.authorized_worker_name = name.to_string();
             }
-            data.user_identity = name.to_string();
+            data.user_identity = user_identity.clone();
             debug!(
                 "Down: Set user_identity to '{}' for downstream {}",
                 data.user_identity, downstream_id
