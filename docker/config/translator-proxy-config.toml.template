@@ -41,6 +41,18 @@ required_extensions = [
 monitoring_address = "0.0.0.0:9092"
 monitoring_cache_refresh_secs = 15
 
+# Public Solo Mining Mode (optional)
+# When enabled, miners provide their Bitcoin address as their username instead of a worker name.
+# The Translator will validate the address format and reject invalid addresses.
+# IMPORTANT: Both Translator AND JDC must have public_solo_mode enabled with matching network.
+#
+# Supported networks: testnet4, signet, regtest
+# NOTE: mainnet addresses are ALWAYS rejected for safety.
+#
+# To enable, uncomment the following section:
+# [public_solo_mode]
+# network = "testnet4"
+
 # Difficulty params
 [downstream_difficulty_config]
 # hashes/s of the weakest miner that will be connecting (e.g.: 10 Th/s = 10_000_000_000_000.0)

@@ -38,3 +38,11 @@ TPROXY_UPSTREAM_ADDRESS=172.28.0.13 # if pool_and_miner_apps_no_jd, pass the poo
 TPROXY_UPSTREAM_PORT=34265 #if pool_and_miner_apps_no_jd, pass the pool port
 TPROXY_UPSTREAM_AUTHORITY_PUBKEY=9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72
 
+# Public Solo Mode Settings (optional)
+# When enabled, miners provide their Bitcoin address as their stratum username.
+# Both JDC and Tproxy must have this enabled with matching network.
+# Supported networks: testnet4, signet, regtest (mainnet NEVER allowed)
+# To enable, uncomment and set to true, then configure network in config templates
+#PUBLIC_SOLO_MODE=true
+#PUBLIC_SOLO_MODE_NETWORK=testnet4
+

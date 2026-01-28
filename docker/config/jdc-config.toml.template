@@ -60,6 +60,19 @@ required_extensions = [
 monitoring_address = "0.0.0.0:9091"
 monitoring_cache_refresh_secs = 15
 
+# Public Solo Mining Mode (optional)
+# When enabled, miners provide their Bitcoin address as their username.
+# Each channel gets a unique coinbase output with the miner's address plus a random tag
+# for disambiguation (in case multiple miners use the same address).
+# IMPORTANT: Both Translator AND JDC must have public_solo_mode enabled with matching network.
+#
+# Supported networks: testnet4, signet, regtest
+# NOTE: mainnet addresses are ALWAYS rejected for safety.
+#
+# To enable, uncomment the following section:
+# [public_solo_mode]
+# network = "testnet4"
+
 # List of upstreams (JDS) used as backup endpoints
 # In case of shares refused by the JDS, the fallback system will propose the same job to the next upstream in this list
 [[upstreams]]
