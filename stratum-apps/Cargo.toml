@@ -61,7 +61,7 @@ default = ["network", "config", "std"]
 
 # Core module features
 network = ["tokio-util", "core"]
-config = []
+config = ["hex"]
 rpc = ["serde_json", "hex", "base64", "hyper", "hyper-util", "http-body-util"]
 monitoring = ["serde_json", "axum", "prometheus", "utoipa", "utoipa-swagger-ui"]
 std = ["bs58/std", "secp256k1/rand-std", "rand/std", "rand/std_rng"]
