@@ -105,6 +105,9 @@ pub struct ChannelManager {
     /// Optional xpub derivator for coinbase rotation.
     /// When set, the coinbase address rotates to a new derived address after each block is found.
     xpub_derivator: Option<Arc<XpubDerivator>>,
+    /// Event-driven metrics for real-time Prometheus counter increments.
+    /// Optional - only present when monitoring is enabled.
+    pub(crate) event_metrics: Option<Arc<stratum_apps::monitoring::event_metrics::EventMetrics>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -232,9 +235,21 @@ impl ChannelManager {
             supported_extensions: config.supported_extensions().to_vec(),
             required_extensions: config.required_extensions().to_vec(),
             xpub_derivator,
+            event_metrics: None, // Will be set later if monitoring is enabled
         };
 
         Ok(channel_manager)
+    }
+
+    /// Set event metrics for real-time counter increments.
+    ///
+    /// This should be called after creating the ChannelManager if monitoring is enabled.
+    pub fn with_event_metrics(
+        mut self,
+        event_metrics: Arc<stratum_apps::monitoring::event_metrics::EventMetrics>,
+    ) -> Self {
+        self.event_metrics = Some(event_metrics);
+        self
     }
 
     // Bootstraps a group channel with the given parameters.
