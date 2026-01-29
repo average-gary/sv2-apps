@@ -25,7 +25,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -89,6 +89,7 @@ struct ServerState {
     sv1_monitoring: Option<Arc<dyn Sv1ClientsMonitoring + Send + Sync + 'static>>,
     start_time: u64,
     metrics: PrometheusMetrics,
+    cache: Arc<super::snapshot_cache::SnapshotCache>,
 }
 
 const DEFAULT_LIMIT: usize = 25;
@@ -129,48 +130,102 @@ fn paginate<T: Clone>(items: &[T], params: &Pagination) -> (usize, Vec<T>) {
 pub struct MonitoringServer {
     bind_address: SocketAddr,
     state: ServerState,
+    refresh_interval: Duration,
 }
 
 impl MonitoringServer {
-    /// Create a new monitoring server
+    /// Create a new monitoring server with automatic cache refresh.
     ///
-    /// Returns a server that exposes monitoring data via HTTP JSON API. Chain with
-    /// `with_sv1_monitoring()` for SV1 support, then call `run()` to start.
+    /// This constructor creates a snapshot cache that decouples monitoring API
+    /// requests from business logic locks, eliminating the DoS vulnerability where
+    /// rapid API requests could cause lock contention with share validation and
+    /// job distribution.
+    ///
+    /// The cache is automatically refreshed in the background at the specified interval.
+    ///
+    /// # Arguments
+    ///
+    /// * `bind_address` - Address to bind the HTTP server to
+    /// * `server_monitoring` - Optional server (upstream) monitoring trait object
+    /// * `clients_monitoring` - Optional clients (downstream) monitoring trait object
+    /// * `refresh_interval` - How often to refresh the cache (e.g., Duration::from_secs(5))
     pub fn new(
         bind_address: SocketAddr,
         server_monitoring: Option<Arc<dyn ServerMonitoring + Send + Sync + 'static>>,
         clients_monitoring: Option<Arc<dyn ClientsMonitoring + Send + Sync + 'static>>,
+        refresh_interval: Duration,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let start_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        // Only register metrics for available monitoring types
-        let metrics = PrometheusMetrics::new(
-            server_monitoring.is_some(),
-            clients_monitoring.is_some(),
-            false, // SV1 metrics added later via with_sv1_monitoring
-        )?;
+        // Create the snapshot cache
+        let cache = Arc::new(super::snapshot_cache::SnapshotCache::new(
+            refresh_interval,
+            server_monitoring,
+            clients_monitoring,
+        ));
+
+        // Do initial refresh
+        cache.refresh();
+
+        // Create cached monitoring wrapper
+        let cached = Arc::new(super::snapshot_cache::CachedMonitoring::new(cache.clone()));
+
+        // Determine which metrics to enable based on what the cache has
+        let snapshot = cache.get_snapshot();
+        let has_server = snapshot.server_info.is_some();
+        let has_clients = snapshot.clients_summary.is_some();
+        let has_sv1 = snapshot.sv1_summary.is_some();
+
+        let metrics = PrometheusMetrics::new(has_server, has_clients, has_sv1)?;
 
         Ok(Self {
             bind_address,
+            refresh_interval,
             state: ServerState {
-                server_monitoring,
-                clients_monitoring,
-                sv1_monitoring: None,
+                server_monitoring: if has_server {
+                    Some(cached.clone() as Arc<dyn ServerMonitoring + Send + Sync>)
+                } else {
+                    None
+                },
+                clients_monitoring: if has_clients {
+                    Some(cached.clone() as Arc<dyn ClientsMonitoring + Send + Sync>)
+                } else {
+                    None
+                },
+                sv1_monitoring: if has_sv1 {
+                    Some(cached as Arc<dyn Sv1ClientsMonitoring + Send + Sync>)
+                } else {
+                    None
+                },
                 start_time,
                 metrics,
+                cache,
             },
         })
     }
 
     /// Add SV1 client monitoring (optional, for Translator Proxy only)
+    ///
+    /// This must be called before `run()` if you want SV1 monitoring.
     pub fn with_sv1_monitoring(
         mut self,
         sv1_monitoring: Arc<dyn Sv1ClientsMonitoring + Send + Sync + 'static>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        self.state.sv1_monitoring = Some(sv1_monitoring);
+        // Add SV1 source to the cache
+        let cache = Arc::new(
+            Arc::try_unwrap(self.state.cache)
+                .unwrap_or_else(|arc| (*arc).clone())
+                .with_sv1_source(sv1_monitoring),
+        );
+
+        // Refresh cache with new SV1 data
+        cache.refresh();
+
+        // Update cached monitoring wrapper
+        let cached = Arc::new(super::snapshot_cache::CachedMonitoring::new(cache.clone()));
 
         // Re-create metrics with SV1 enabled
         self.state.metrics = PrometheusMetrics::new(
@@ -179,13 +234,18 @@ impl MonitoringServer {
             true, // Enable SV1 metrics
         )?;
 
+        // Update monitoring references
+        self.state.sv1_monitoring = Some(cached as Arc<dyn Sv1ClientsMonitoring + Send + Sync>);
+        self.state.cache = cache;
+
         Ok(self)
     }
 
     /// Run the monitoring server until the shutdown signal completes
     ///
     /// Starts an HTTP server that exposes monitoring data as JSON.
-    /// The server shuts down gracefully when `shutdown_signal` completes.
+    /// Also starts a background task that refreshes the snapshot cache periodically.
+    /// Both tasks shut down gracefully when `shutdown_signal` completes.
     ///
     /// Automatically exposes:
     /// - Swagger UI at `/swagger-ui`
@@ -196,6 +256,18 @@ impl MonitoringServer {
         shutdown_signal: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Starting monitoring server on http://{}", self.bind_address);
+        info!("Cache refresh interval: {:?}", self.refresh_interval);
+
+        // Spawn background task to refresh cache periodically
+        let cache_for_refresh = self.state.cache.clone();
+        let refresh_interval = self.refresh_interval;
+        let refresh_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(refresh_interval);
+            loop {
+                interval.tick().await;
+                cache_for_refresh.refresh();
+            }
+        });
 
         // Versioned JSON API under /api/v1
         let api_v1 = Router::new()
@@ -227,15 +299,19 @@ impl MonitoringServer {
             self.bind_address
         );
 
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown_signal.await;
-                info!("Monitoring server received shutdown signal, stopping...");
-            })
-            .await?;
+        let server_handle = axum::serve(listener, app).with_graceful_shutdown(async move {
+            shutdown_signal.await;
+            info!("Monitoring server received shutdown signal, stopping...");
+        });
+
+        // Run server and wait for shutdown
+        let result = server_handle.await;
+
+        // Stop the refresh task
+        refresh_handle.abort();
 
         info!("Monitoring server stopped");
-        Ok(())
+        result.map_err(|e| e.into())
     }
 }
 

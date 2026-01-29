@@ -13,7 +13,11 @@ pub mod client;
 pub mod http_server;
 pub mod prometheus_metrics;
 pub mod server;
+pub mod snapshot_cache;
 pub mod sv1;
+
+#[cfg(test)]
+mod tests;
 
 pub use client::{
     ClientInfo, ClientMetadata, ClientsMonitoring, ClientsSummary, ExtendedChannelInfo,
@@ -24,6 +28,7 @@ pub use server::{
     ServerExtendedChannelInfo, ServerInfo, ServerMonitoring, ServerStandardChannelInfo,
     ServerSummary,
 };
+pub use snapshot_cache::{CachedMonitoring, MonitoringSnapshot, SnapshotCache};
 pub use sv1::{Sv1ClientInfo, Sv1ClientsMonitoring, Sv1ClientsSummary};
 
 use utoipa::ToSchema;
