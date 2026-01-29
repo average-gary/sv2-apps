@@ -158,6 +158,16 @@ impl SnapshotCache {
             .is_stale(self.refresh_interval)
     }
 
+    /// Refresh the cache only if it's stale (older than freshness_threshold).
+    ///
+    /// This is the preferred method for on-demand refresh, as it prevents
+    /// excessive refreshes from concurrent requests.
+    pub fn refresh_if_stale(&self) {
+        if self.needs_refresh() {
+            self.refresh();
+        }
+    }
+
     /// Refresh the cache by reading from the data sources.
     ///
     /// This method DOES acquire the business logic locks (via the trait methods),
