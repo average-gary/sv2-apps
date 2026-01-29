@@ -55,6 +55,23 @@ pub struct JobDeclaratorClientConfig {
     /// Optional monitoring server bind address
     #[serde(default)]
     monitoring_address: Option<SocketAddr>,
+
+    /// Starting derivation index for coinbase rotation (default: 0).
+    ///
+    /// Only used when `coinbase_reward_script` contains a wildcard descriptor
+    /// (e.g., `wpkh(xpub.../0/*)`). Ignored for static addresses.
+    #[serde(default)]
+    coinbase_start_index: u32,
+
+    /// Path to persist the current coinbase derivation index.
+    ///
+    /// Required when `coinbase_reward_script` contains a wildcard descriptor.
+    /// The index is persisted after each block found, allowing address derivation
+    /// to resume at the correct index after restarts.
+    ///
+    /// Parent directories will be created if they don't exist.
+    #[serde(default, deserialize_with = "opt_path_from_toml")]
+    coinbase_index_file: Option<PathBuf>,
 }
 
 impl JobDeclaratorClientConfig {
@@ -95,6 +112,8 @@ impl JobDeclaratorClientConfig {
             supported_extensions,
             required_extensions,
             monitoring_address: None,
+            coinbase_start_index: 0,
+            coinbase_index_file: None,
         }
     }
 
@@ -185,6 +204,21 @@ impl JobDeclaratorClientConfig {
     /// Returns the required extensions.
     pub fn required_extensions(&self) -> &[u16] {
         &self.required_extensions
+    }
+
+    /// Returns the coinbase reward script.
+    pub fn coinbase_reward_script(&self) -> &CoinbaseRewardScript {
+        &self.coinbase_reward_script
+    }
+
+    /// Returns the starting derivation index for coinbase rotation.
+    pub fn coinbase_start_index(&self) -> u32 {
+        self.coinbase_start_index
+    }
+
+    /// Returns the path to the coinbase derivation index file.
+    pub fn coinbase_index_file(&self) -> Option<&Path> {
+        self.coinbase_index_file.as_deref()
     }
 }
 

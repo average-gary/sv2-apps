@@ -248,6 +248,8 @@ pub enum JDCErrorKind {
     CustomJobError,
     /// Could not initiate subsystem
     CouldNotInitiateSystem,
+    /// Invalid configuration
+    InvalidConfiguration(String),
 }
 
 impl std::error::Error for JDCErrorKind {}
@@ -388,6 +390,7 @@ impl fmt::Display for JDCErrorKind {
             CloseChannel => write!(f, "channel closed by upstream"),
             CustomJobError => write!(f, "Custom job not acknowledged"),
             CouldNotInitiateSystem => write!(f, "Could not initiate subsystem"),
+            InvalidConfiguration(ref msg) => write!(f, "Invalid configuration: {msg}"),
         }
     }
 }

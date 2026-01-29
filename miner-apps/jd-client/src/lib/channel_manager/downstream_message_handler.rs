@@ -924,6 +924,8 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
     //    - Translate the share into an upstream `SubmitSharesExtended`.
     //    - Validate with the upstream channel.
     //    - Forward valid shares (or block solutions) upstream.
+    //
+    // 3. If a block is found in solo mining mode, rotate the coinbase address.
     async fn handle_submit_shares_standard(
         &mut self,
         client_id: Option<usize>,
@@ -944,7 +946,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
             })
         };
 
-        let messages = self.channel_manager_data.super_safe_lock(|channel_manager_data| {
+        let (messages, solo_block_found) = self.channel_manager_data.super_safe_lock(|channel_manager_data| {
             let Some(downstream) = channel_manager_data.downstream.get_mut(&downstream_id) else {
                 warn!("No downstream found for downstream_id={downstream_id}");
                 return Err(JDCError::disconnect(JDCErrorKind::DownstreamNotFound(downstream_id), downstream_id));
@@ -956,14 +958,15 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
 
             downstream.downstream_data.super_safe_lock(|data| {
                 let mut messages: Vec<RouteMessageTo> = vec![];
+                let mut solo_block_found = false;
 
                 let Some(standard_channel) = data.standard_channels.get_mut(&channel_id) else {
                     error!("SubmitSharesError: channel_id: {channel_id}, sequence_number: {}, error_code: invalid-channel-id", msg.sequence_number);
-                    return Ok(vec![(downstream_id, build_error("invalid-channel-id")).into()]);
+                    return Ok((vec![(downstream_id, build_error("invalid-channel-id")).into()], false));
                 };
 
                 let Some(vardiff) = channel_manager_data.vardiff.get_mut(&(downstream_id, channel_id).into()) else {
-                    return Ok(vec![(downstream_id, Mining::CloseChannel(create_close_channel_msg(channel_id, "invalid-channel-id"))).into()]);
+                    return Ok((vec![(downstream_id, Mining::CloseChannel(create_close_channel_msg(channel_id, "invalid-channel-id"))).into()], false));
                 };
                 vardiff.increment_shares_since_last_update();
                 let res = standard_channel.validate_share(msg.clone());
@@ -1014,6 +1017,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             downstream.downstream_id,
                             Mining::SubmitSharesSuccess(success),
                         ).into());
+
+                        // Track block found in solo mining mode (no upstream channel)
+                        if channel_manager_data.upstream_channel.is_none() {
+                            solo_block_found = true;
+                        }
                     }
                     Err(err) => {
                         let code = match err {
@@ -1030,7 +1038,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 }
 
                 if !is_downstream_share_valid {
-                    return Ok(messages);
+                    return Ok((messages, solo_block_found));
                 }
 
                 if let Some(upstream_channel) = channel_manager_data.upstream_channel.as_mut() {
@@ -1097,12 +1105,17 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     }
                 }
 
-                Ok(messages)
+                Ok((messages, solo_block_found))
             })
         })?;
 
         for messages in messages {
             let _ = messages.forward(&self.channel_manager_channel).await;
+        }
+
+        // Rotate coinbase address if block found in solo mining mode
+        if solo_block_found {
+            self.rotate_coinbase_address();
         }
 
         Ok(())
@@ -1119,6 +1132,8 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
     //    - Translate the share into an upstream `SubmitSharesExtended`.
     //    - Validate with the upstream channel.
     //    - Forward valid shares (or block solutions) upstream.
+    //
+    // 3. If a block is found in solo mining mode, rotate the coinbase address.
     async fn handle_submit_shares_extended(
         &mut self,
         client_id: Option<usize>,
@@ -1140,7 +1155,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
             })
         };
 
-        let messages = self.channel_manager_data.super_safe_lock(|channel_manager_data| {
+        let (messages, solo_block_found) = self.channel_manager_data.super_safe_lock(|channel_manager_data| {
             let Some(downstream) = channel_manager_data.downstream.get_mut(&downstream_id) else {
                 warn!("No downstream found for downstream_id={downstream_id}");
                 return Err(JDCError::disconnect(JDCErrorKind::DownstreamNotFound(downstream_id), downstream_id));
@@ -1151,10 +1166,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
             };
             downstream.downstream_data.super_safe_lock(|data| {
                 let mut messages: Vec<RouteMessageTo> = vec![];
+                let mut solo_block_found = false;
 
                 let Some(extended_channel) = data.extended_channels.get_mut(&channel_id) else {
                     error!("SubmitSharesError: channel_id: {channel_id}, sequence_number: {}, error_code: invalid-channel-id", msg.sequence_number);
-                    return Ok(vec![(downstream_id, build_error("invalid-channel-id")).into()]);
+                    return Ok((vec![(downstream_id, build_error("invalid-channel-id")).into()], false));
                 };
                 // here we extract and set the user_identity from the TLV fields if the extension is negotiated
                 let user_identity = if negotiated_extensions.as_ref().is_ok_and(|exts| exts.contains(&EXTENSION_TYPE_WORKER_HASHRATE_TRACKING)) {
@@ -1174,7 +1190,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 }
 
                 let Some(vardiff) = channel_manager_data.vardiff.get_mut(&(downstream_id, channel_id).into()) else {
-                    return Ok(vec![(downstream_id, Mining::CloseChannel(create_close_channel_msg(channel_id, "invalid-channel-id"))).into()]);
+                    return Ok((vec![(downstream_id, Mining::CloseChannel(create_close_channel_msg(channel_id, "invalid-channel-id"))).into()], false));
                 };
                 vardiff.increment_shares_since_last_update();
                 let res = extended_channel.validate_share(msg.clone());
@@ -1224,6 +1240,11 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                             downstream.downstream_id,
                             Mining::SubmitSharesSuccess(success),
                         ).into());
+
+                        // Track block found in solo mining mode (no upstream channel)
+                        if channel_manager_data.upstream_channel.is_none() {
+                            solo_block_found = true;
+                        }
                     }
                     Err(err) => {
                         let code = match err {
@@ -1241,7 +1262,7 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                 }
 
                 if !is_downstream_share_valid{
-                    return Ok(messages);
+                    return Ok((messages, solo_block_found));
                 }
 
                 if let Some(upstream_channel) = channel_manager_data.upstream_channel.as_mut() {
@@ -1315,12 +1336,17 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                     }
                 }
 
-                Ok(messages)
+                Ok((messages, solo_block_found))
             })
         })?;
 
         for messages in messages {
             _ = messages.forward(&self.channel_manager_channel).await;
+        }
+
+        // Rotate coinbase address if block found in solo mining mode
+        if solo_block_found {
+            self.rotate_coinbase_address();
         }
 
         Ok(())
