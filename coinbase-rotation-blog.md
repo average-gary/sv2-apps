@@ -167,9 +167,6 @@ coinbase_index_file = "/var/lib/pool/coinbase_index.dat"
 
 # Starting derivation index (default: 0)
 coinbase_start_index = 0
-
-# Optional: use block height as index for easier wallet recovery
-use_block_height_derivation = false
 ```
 
 ### Supported Descriptor Types
@@ -237,7 +234,7 @@ The implementation uses Rust's `miniscript` crate for descriptor parsing and der
 - Parses wildcard descriptors
 - Derives scriptPubKey at arbitrary indices
 - Thread-safe index management via `AtomicU32`
-- Persistent storage with format: `seq:N` or `height:N`
+- Persistent storage with format: `seq:N`
 
 **`CoinbaseRewardScript`** — `stratum-apps/src/config_helpers/coinbase_output/`
 - Detects wildcard descriptors via `has_wildcard()` method
@@ -247,25 +244,11 @@ The implementation uses Rust's `miniscript` crate for descriptor parsing and der
 - Calls `rotate_coinbase_address()` after block found
 - Updates `coinbase_outputs` in channel manager data
 
-### Derivation Modes
-
-| Mode | Index Source | Use Case |
-|------|--------------|----------|
-| Sequential | 0, 1, 2, 3, ... | Default, simple incrementing |
-| Block Height | Block's height | Easier wallet recovery (derive at height N to find block N's address) |
-
-> **Note: Block Height Derivation Not Yet Verified**
->
-> The block height derivation mode (`use_block_height_derivation = true`) has **not been validated in production**. The testnet4 blocks shown above used sequential derivation. Use block height mode with caution and thorough testing.
-
 ### Persistence Format
 
 ```
-# Sequential mode
+# Index format
 seq:42
-
-# Block height mode
-height:850000
 
 # Legacy format (treated as sequential)
 42
@@ -444,4 +427,4 @@ If you have a descriptor from Sparrow or Bitcoin Core in a different format, use
 
 *License: MIT / Apache-2.0*
 
-*Last updated: January 28, 2026*
+*Last updated: January 29, 2026*

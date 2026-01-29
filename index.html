@@ -254,10 +254,7 @@ coinbase_reward_script = "wpkh(tpub.../0/*)"
 coinbase_index_file = "/var/lib/pool/coinbase_index.dat"
 
 # Starting derivation index (default: 0)
-coinbase_start_index = 0
-
-# Optional: use block height as index for easier wallet recovery
-use_block_height_derivation = false</code></pre>
+coinbase_start_index = 0</code></pre>
 
             <h3>Supported Descriptor Types</h3>
             <table>
@@ -353,7 +350,7 @@ flowchart LR
                     <code>stratum-apps/src/config_helpers/xpub_derivation.rs</code><br>
                     Parses wildcard descriptors, derives scriptPubKey at arbitrary indices, 
                     thread-safe index management via <code>AtomicU32</code>, persistent storage 
-                    with format: <code>seq:N</code> or <code>height:N</code>
+                    with format: <code>seq:N</code>
                 </dd>
 
                 <dt><code>CoinbaseRewardScript</code></dt>
@@ -371,44 +368,9 @@ flowchart LR
                 </dd>
             </dl>
 
-            <h3>Derivation Modes</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Mode</th>
-                        <th>Index Source</th>
-                        <th>Use Case</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>Sequential</td>
-                        <td>0, 1, 2, 3, ...</td>
-                        <td>Default, simple incrementing</td>
-                    </tr>
-                    <tr>
-                        <td>Block Height</td>
-                        <td>Block's height</td>
-                        <td>Easier wallet recovery (derive at height N to find block N's address)</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <div class="callout warning">
-                <h4>Note: Block Height Derivation Not Yet Verified</h4>
-                <p>
-                    The block height derivation mode (<code>use_block_height_derivation = true</code>) has 
-                    <strong>not been validated in production</strong>. The testnet4 blocks shown above used 
-                    sequential derivation. Use block height mode with caution and thorough testing.
-                </p>
-            </div>
-
             <h3>Persistence Format</h3>
-            <pre><code># Sequential mode
+            <pre><code># Index format
 seq:42
-
-# Block height mode
-height:850000
 
 # Legacy format (treated as sequential)
 42</code></pre>
@@ -588,7 +550,7 @@ coinbase_index_file = "/path/to/coinbase_index.dat"</code></pre>
             <a href="https://stratumprotocol.org/" target="_blank">SRI Documentation</a>
         </p>
         <p>License: MIT / Apache-2.0</p>
-        <p class="updated">Last updated: <time datetime="2026-01-28">January 28, 2026</time></p>
+        <p class="updated">Last updated: <time datetime="2026-01-29">January 29, 2026</time></p>
     </footer>
 </body>
 </html>
