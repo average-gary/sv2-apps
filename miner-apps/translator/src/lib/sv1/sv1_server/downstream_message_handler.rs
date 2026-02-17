@@ -10,7 +10,7 @@ use stratum_apps::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    error, is_aggregated,
+    is_aggregated,
     sv1::{downstream::SubmitShareWithChannelId, Sv1Server},
     utils::{validate_sv1_share, AGGREGATED_CHANNEL_ID},
 };

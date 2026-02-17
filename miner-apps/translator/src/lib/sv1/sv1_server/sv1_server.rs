@@ -729,10 +729,9 @@ impl Sv1Server {
                             "Public solo mode: Completing SV1 handshake for downstream {}",
                             downstream_id
                         );
-                        downstream.downstream_data.super_safe_lock(|d| {
-                            d.sv1_handshake_complete
-                                .store(true, std::sync::atomic::Ordering::SeqCst);
-                        });
+                        downstream
+                            .sv1_handshake_complete
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
 
                     let set_difficulty = build_sv1_set_difficulty_from_sv2_target(first_target)
