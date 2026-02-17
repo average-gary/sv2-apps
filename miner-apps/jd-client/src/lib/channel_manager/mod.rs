@@ -1191,10 +1191,6 @@ impl ChannelManager {
                             upstream_channel.get_target()
                         );
 
-                        // Update the upstream channel's nominal hashrate to reflect
-                        // the aggregated downstream hashrate
-                        upstream_channel.set_nominal_hashrate(downstream_hashrate);
-
                         info!("Sending update channel message upstream");
                         messages.push(
                             Mining::UpdateChannel(UpdateChannel {

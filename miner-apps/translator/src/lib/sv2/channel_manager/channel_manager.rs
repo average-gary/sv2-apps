@@ -677,19 +677,12 @@ impl ChannelManager {
                 debug!("Received UpdateChannel from SV1Server: {:?}", m);
 
                 if is_aggregated() {
-                    // Update the aggregated channel's nominal hashrate so
-                    // that monitoring reports a value consistent with the
-                    // downstream vardiff estimate.
-                    if let Some(mut aggregated_extended_channel) =
-                        self.extended_channels.get_mut(&AGGREGATED_CHANNEL_ID)
+                    // In aggregated mode, forward the UpdateChannel to the upstream
+                    // channel ID
+                    if let Some(aggregated_extended_channel) =
+                        self.extended_channels.get(&AGGREGATED_CHANNEL_ID)
                     {
-                        aggregated_extended_channel.set_nominal_hashrate(m.nominal_hash_rate);
                         m.channel_id = aggregated_extended_channel.get_channel_id();
-                    }
-                } else {
-                    // Non-aggregated: update the specific channel's nominal hashrate
-                    if let Some(mut channel) = self.extended_channels.get_mut(&m.channel_id) {
-                        channel.set_nominal_hashrate(m.nominal_hash_rate);
                     }
                 }
 
