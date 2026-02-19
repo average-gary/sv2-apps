@@ -3,9 +3,9 @@ use std::{net::SocketAddr, sync::Arc};
 use async_channel::{unbounded, Receiver, Sender};
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
+    config_helpers::resolve_host,
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
-    key_utils::Secp256k1PublicKey,
     network_helpers::connect_with_noise,
     stratum_core::{
         framing_sv2,
@@ -26,7 +26,7 @@ use crate::{
     error::{self, JDCError, JDCErrorKind, JDCResult},
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
-    utils::get_setup_connection_message_jds,
+    utils::{get_setup_connection_message_jds, UpstreamEntry},
 };
 
 mod message_handler;
@@ -61,11 +61,12 @@ pub struct JobDeclarator {
 impl JobDeclarator {
     /// Creates a new JobDeclarator instance by connecting and performing a Noise handshake.
     ///
+    /// - Resolves hostname to IP address via DNS (if not already an IP)
     /// - Establishes TCP connection.
     /// - Performs SV2 Noise handshake.
     /// - Spawns background IO tasks for reading/writing frames.
     pub async fn new(
-        upstreams: &(SocketAddr, SocketAddr, Secp256k1PublicKey, bool),
+        upstream_entry: &UpstreamEntry,
         channel_manager_sender: Sender<JobDeclaration<'static>>,
         channel_manager_receiver: Receiver<JobDeclaration<'static>>,
         cancellation_token: CancellationToken,
@@ -73,7 +74,16 @@ impl JobDeclarator {
         mode: ConfigJDCMode,
         task_manager: Arc<TaskManager>,
     ) -> JDCResult<Self, error::JobDeclarator> {
-        let (_, addr, pubkey, _) = upstreams;
+        let addr = resolve_host(&upstream_entry.jds_host, upstream_entry.jds_port)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to resolve JDS address {}:{}: {e}",
+                    upstream_entry.jds_host, upstream_entry.jds_port
+                );
+                JDCError::fallback(JDCErrorKind::CouldNotInitiateSystem)
+            })?;
+
         info!("Connecting to JD Server at {addr}");
         let stream = tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
@@ -85,7 +95,7 @@ impl JobDeclarator {
         info!("Connection established with JD Server at {addr} in mode: {mode:?}");
 
         let (noise_stream_reader, noise_stream_writer) = tokio::select! {
-            result = connect_with_noise(stream, Some(*pubkey)) => {
+            result = connect_with_noise(stream, Some(upstream_entry.authority_pubkey)) => {
                 result.map_err(JDCError::fallback)?.into_split()
             }
             _ = cancellation_token.cancelled() => {
@@ -116,7 +126,7 @@ impl JobDeclarator {
         Ok(JobDeclarator {
             job_declarator_channel,
             job_declarator_data,
-            socket_address: *addr,
+            socket_address: addr,
             mode,
         })
     }

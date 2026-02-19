@@ -101,7 +101,8 @@ impl TranslatorSv2 {
             .upstreams
             .iter()
             .map(|u| UpstreamEntry {
-                addr: SocketAddr::new(u.address.parse().unwrap(), u.port),
+                host: u.address.clone(),
+                port: u.port,
                 authority_pubkey: u.authority_pubkey,
                 tried_or_flagged: false,
             })
@@ -417,10 +418,11 @@ impl TranslatorSv2 {
             }
 
             info!(
-                "Trying upstream {} of {}: {:?}",
+                "Trying upstream {} of {}: {}:{}",
                 i + 1,
                 upstream_len,
-                upstream_entry.addr
+                upstream_entry.host,
+                upstream_entry.port
             );
             for attempt in 1..=MAX_RETRIES {
                 info!("Connection attempt {}/{}...", attempt, MAX_RETRIES);
@@ -459,13 +461,13 @@ impl TranslatorSv2 {
                     }
                     Err(e) => {
                         warn!(
-                            "Attempt {}/{} failed for {:?}: {:?}",
-                            attempt, MAX_RETRIES, upstream_entry.addr, e
+                            "Attempt {}/{} failed for {}:{}: {:?}",
+                            attempt, MAX_RETRIES, upstream_entry.host, upstream_entry.port, e
                         );
                         if attempt == MAX_RETRIES {
                             warn!(
-                                "Max retries reached for {:?}, moving to next upstream",
-                                upstream_entry.addr
+                                "Max retries reached for {}:{}, moving to next upstream",
+                                upstream_entry.host, upstream_entry.port
                             );
                         }
                     }

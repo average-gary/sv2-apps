@@ -20,6 +20,7 @@ use std::{
 };
 
 use stratum_apps::{
+    key_utils::Secp256k1PublicKey,
     stratum_core::{
         binary_sv2::Str0255,
         common_messages_sv2::{Protocol, SetupConnection},
@@ -30,6 +31,20 @@ use stratum_apps::{
 };
 
 use crate::{config::ConfigJDCMode, error::JDCErrorKind};
+
+/// Represents a single upstream entry (pool + JDS pair) with raw address strings
+/// that are resolved via DNS at connection time.
+#[derive(Debug, Clone)]
+pub struct UpstreamEntry {
+    /// Pool host — can be an IP address or a hostname.
+    pub pool_host: String,
+    pub pool_port: u16,
+    /// JDS host — can be an IP address or a hostname.
+    pub jds_host: String,
+    pub jds_port: u16,
+    pub authority_pubkey: Secp256k1PublicKey,
+    pub tried_or_flagged: bool,
+}
 
 /// Constructs a `SetupConnection` message for the mining protocol.
 pub fn get_setup_connection_message(

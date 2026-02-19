@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 use stratum_apps::{
     key_utils::Secp256k1PublicKey,
     stratum_core::{
@@ -141,7 +139,9 @@ pub fn proxy_extranonce_prefix_len(
 
 #[derive(Debug)]
 pub struct UpstreamEntry {
-    pub addr: SocketAddr,
+    /// Upstream host — can be an IP address or a hostname (resolved at connection time).
+    pub host: String,
+    pub port: u16,
     pub authority_pubkey: Secp256k1PublicKey,
     pub tried_or_flagged: bool,
 }

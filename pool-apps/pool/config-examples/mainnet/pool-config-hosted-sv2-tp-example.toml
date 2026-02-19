@@ -46,5 +46,6 @@ monitoring_cache_refresh_secs = 15
 
 # Hosted Sv2 Template Provider config
 [template_provider_type.Sv2Tp]
+# address accepts "ip:port" or "hostname:port" (e.g. "tp.example.com:8442")
 address = "75.119.150.111:8442"
 public_key = "9bwHCYnjhbHm4AS3pWg9MtAH83mzWohoJJJDELYBqZhDNqszDLc"

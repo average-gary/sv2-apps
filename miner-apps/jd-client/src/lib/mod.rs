@@ -1,10 +1,9 @@
-use std::{net::SocketAddr, sync::Arc, thread::JoinHandle, time::Duration};
+use std::{sync::Arc, thread::JoinHandle, time::Duration};
 
 use async_channel::{unbounded, Receiver, Sender};
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
     fallback_coordinator::FallbackCoordinator,
-    key_utils::Secp256k1PublicKey,
     stratum_core::{bitcoin::consensus::Encodable, parsers_sv2::JobDeclaration},
     task_manager::TaskManager,
     tp_type::TemplateProviderType,
@@ -25,7 +24,7 @@ use crate::{
         sv2_tp::Sv2Tp,
     },
     upstream::Upstream,
-    utils::UpstreamState,
+    utils::{UpstreamEntry, UpstreamState},
 };
 
 mod channel_manager;
@@ -241,16 +240,13 @@ impl JobDeclaratorClient {
             .config
             .upstreams()
             .iter()
-            .map(|u| {
-                let pool_addr = SocketAddr::new(
-                    u.pool_address.parse().expect("Invalid pool address"),
-                    u.pool_port,
-                );
-                let jd_addr = SocketAddr::new(
-                    u.jds_address.parse().expect("Invalid JD address"),
-                    u.jds_port,
-                );
-                (pool_addr, jd_addr, u.authority_pubkey, false)
+            .map(|u| UpstreamEntry {
+                pool_host: u.pool_address.clone(),
+                pool_port: u.pool_port,
+                jds_host: u.jds_address.clone(),
+                jds_port: u.jds_port,
+                authority_pubkey: u.authority_pubkey,
+                tried_or_flagged: false,
             })
             .collect();
 
@@ -579,7 +575,7 @@ impl JobDeclaratorClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn initialize_jd(
         &self,
-        upstreams: &mut [(SocketAddr, SocketAddr, Secp256k1PublicKey, bool)],
+        upstreams: &mut [UpstreamEntry],
         channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
         upstream_to_channel_manager_sender: Sender<Sv2Frame>,
         channel_manager_to_jd_receiver: Receiver<JobDeclaration<'static>>,
@@ -591,17 +587,20 @@ impl JobDeclaratorClient {
     ) -> Result<(Upstream, JobDeclarator), JDCErrorKind> {
         const MAX_RETRIES: usize = 3;
         let upstream_len = upstreams.len();
-        for (i, upstream_addr) in upstreams.iter_mut().enumerate() {
+        for (i, upstream_entry) in upstreams.iter_mut().enumerate() {
             info!(
-                "Trying upstream {} of {}: {:?}",
+                "Trying upstream {} of {}: pool={}:{}, jds={}:{}",
                 i + 1,
                 upstream_len,
-                upstream_addr
+                upstream_entry.pool_host,
+                upstream_entry.pool_port,
+                upstream_entry.jds_host,
+                upstream_entry.jds_port,
             );
 
             tokio::time::sleep(Duration::from_secs(1)).await;
 
-            if upstream_addr.3 {
+            if upstream_entry.tried_or_flagged {
                 info!(
                     "Upstream previously marked as malicious, skipping initial attempt warnings."
                 );
@@ -612,7 +611,7 @@ impl JobDeclaratorClient {
                 info!("Connection attempt {}/{}...", attempt, MAX_RETRIES);
 
                 match try_initialize_single(
-                    upstream_addr,
+                    upstream_entry,
                     upstream_to_channel_manager_sender.clone(),
                     channel_manager_to_upstream_receiver.clone(),
                     jd_to_channel_manager_sender.clone(),
@@ -626,26 +625,35 @@ impl JobDeclaratorClient {
                 .await
                 {
                     Ok(pair) => {
-                        upstream_addr.3 = true;
+                        upstream_entry.tried_or_flagged = true;
                         return Ok(pair);
                     }
                     Err(e) => {
                         tracing::error!("Upstream and JDS connection terminated");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         warn!(
-                            "Attempt {}/{} failed for {:?}: {:?}",
-                            attempt, MAX_RETRIES, upstream_addr, e
+                            "Attempt {}/{} failed for pool={}:{}, jds={}:{}: {:?}",
+                            attempt,
+                            MAX_RETRIES,
+                            upstream_entry.pool_host,
+                            upstream_entry.pool_port,
+                            upstream_entry.jds_host,
+                            upstream_entry.jds_port,
+                            e
                         );
                         if attempt == MAX_RETRIES {
                             warn!(
-                                "Max retries reached for {:?}, moving to next upstream",
-                                upstream_addr
+                                "Max retries reached for pool={}:{}, jds={}:{}, moving to next upstream",
+                                upstream_entry.pool_host,
+                                upstream_entry.pool_port,
+                                upstream_entry.jds_host,
+                                upstream_entry.jds_port,
                             );
                         }
                     }
                 }
             }
-            upstream_addr.3 = true;
+            upstream_entry.tried_or_flagged = true;
         }
 
         tracing::error!("All upstreams failed after {} retries each", MAX_RETRIES);
@@ -657,7 +665,7 @@ impl JobDeclaratorClient {
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(not(test), hotpath::measure)]
 async fn try_initialize_single(
-    upstream_addr: &(SocketAddr, SocketAddr, Secp256k1PublicKey, bool),
+    upstream_entry: &UpstreamEntry,
     upstream_to_channel_manager_sender: Sender<Sv2Frame>,
     channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
     jd_to_channel_manager_sender: Sender<JobDeclaration<'static>>,
@@ -670,7 +678,7 @@ async fn try_initialize_single(
 ) -> Result<(Upstream, JobDeclarator), JDCErrorKind> {
     info!("Upstream connection in-progress at initialize single");
     let upstream = Upstream::new(
-        upstream_addr,
+        upstream_entry,
         upstream_to_channel_manager_sender,
         channel_manager_to_upstream_receiver,
         cancellation_token.clone(),
@@ -684,7 +692,7 @@ async fn try_initialize_single(
     info!("Upstream connection done at initialize single");
 
     let job_declarator = JobDeclarator::new(
-        upstream_addr,
+        upstream_entry,
         jd_to_channel_manager_sender,
         channel_manager_to_jd_receiver,
         cancellation_token,

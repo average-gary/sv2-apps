@@ -14,3 +14,6 @@ pub mod logging;
 
 mod toml;
 pub use toml::{duration_from_toml, opt_path_from_toml};
+
+pub mod resolve;
+pub use resolve::{resolve_host, resolve_host_port, ResolveError};

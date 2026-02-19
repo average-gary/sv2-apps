@@ -14,9 +14,9 @@ use std::{net::SocketAddr, sync::Arc};
 use async_channel::{unbounded, Receiver, Sender};
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
+    config_helpers::resolve_host,
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
-    key_utils::Secp256k1PublicKey,
     network_helpers::connect_with_noise,
     stratum_core::{
         binary_sv2::Seq064K, extensions_sv2::RequestExtensions, framing_sv2,
@@ -35,7 +35,7 @@ use crate::{
     error::{self, JDCError, JDCErrorKind, JDCResult},
     io_task::spawn_io_tasks,
     status::{handle_error, Status, StatusSender},
-    utils::get_setup_connection_message,
+    utils::{get_setup_connection_message, UpstreamEntry},
 };
 
 mod message_handler;
@@ -75,10 +75,11 @@ pub struct Upstream {
 impl Upstream {
     /// Create a new [`Upstream`] connection to the given address.
     ///
+    /// - Resolves hostname to IP address via DNS (if not already an IP)
     /// - Establishes TCP + Noise connection
     /// - Spawns IO tasks to handle inbound/outbound traffic
     pub async fn new(
-        upstreams: &(SocketAddr, SocketAddr, Secp256k1PublicKey, bool),
+        upstream_entry: &UpstreamEntry,
         channel_manager_sender: Sender<Sv2Frame>,
         channel_manager_receiver: Receiver<Sv2Frame>,
         cancellation_token: CancellationToken,
@@ -86,7 +87,16 @@ impl Upstream {
         task_manager: Arc<TaskManager>,
         required_extensions: Vec<u16>,
     ) -> JDCResult<Self, error::Upstream> {
-        let (addr, _, pubkey, _) = upstreams;
+        let addr = resolve_host(&upstream_entry.pool_host, upstream_entry.pool_port)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to resolve pool address {}:{}: {e}",
+                    upstream_entry.pool_host, upstream_entry.pool_port
+                );
+                JDCError::fallback(JDCErrorKind::CouldNotInitiateSystem)
+            })?;
+
         let stream = tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
             TcpStream::connect(addr),
@@ -98,7 +108,7 @@ impl Upstream {
         debug!("Begin with noise setup in upstream connection");
 
         let (noise_stream_reader, noise_stream_writer) = tokio::select! {
-            result = connect_with_noise(stream, Some(*pubkey)) => {
+            result = connect_with_noise(stream, Some(upstream_entry.authority_pubkey)) => {
                 match result {
                     Ok(noise_stream) => Ok(noise_stream.into_split()),
                     Err(e) => Err(JDCError::fallback(e))
@@ -123,7 +133,7 @@ impl Upstream {
             fallback_coordinator.clone(),
         );
 
-        debug!("Noise setup done  in upstream connection");
+        debug!("Noise setup done in upstream connection");
         let upstream_data = Arc::new(Mutex::new(UpstreamData));
         let upstream_channel = UpstreamChannel {
             channel_manager_receiver,
@@ -135,7 +145,7 @@ impl Upstream {
             upstream_data,
             upstream_channel,
             required_extensions,
-            address: *addr,
+            address: addr,
         })
     }
 
