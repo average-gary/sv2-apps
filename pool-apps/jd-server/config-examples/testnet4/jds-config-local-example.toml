@@ -20,6 +20,7 @@ coinbase_reward_script = "addr(tb1qa0sm0hxzj0x25rh8gw5xlzwlsfvvyz8u96w3p8)"
 # SRI Pool JD config
 listen_jd_address = "0.0.0.0:43334"
 # RPC config for mempool (it can be also the same TP if correctly configured)
+# core_rpc_url accepts IP addresses or hostnames (e.g. "http://rpc.example.com")
 core_rpc_url =  "http://127.0.0.1"
 core_rpc_port = 48332
 core_rpc_user =  "username"

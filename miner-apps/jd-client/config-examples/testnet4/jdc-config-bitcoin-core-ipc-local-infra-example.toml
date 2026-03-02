@@ -64,6 +64,7 @@ monitoring_cache_refresh_secs = 15
 # In case of shares refused by the Pool or JDS, the fallback system will propose the same job to the next upstream in this list
 [[upstreams]]
 authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+# pool_address and jds_address accept IP addresses or hostnames (e.g. "pool.example.com")
 pool_address = "0.0.0.0"
 pool_port = 43333
 jds_address = "0.0.0.0"
