@@ -5,14 +5,18 @@
 //!
 //! - Noise-encrypted connections ([`noise_connection`], [`noise_stream`])
 //! - SV1 protocol connections ([`sv1_connection`]) - when `sv1` feature is enabled
+//! - Hostname resolution ([`resolve_hostname`])
 //!
 //! Originally from the `network_helpers_sv2` crate.
 
 pub mod noise_connection;
 pub mod noise_stream;
+pub mod resolve_hostname;
 
 #[cfg(feature = "sv1")]
 pub mod sv1_connection;
+
+pub use resolve_hostname::{resolve_host, resolve_host_port, ResolveError};
 
 use async_channel::{RecvError, SendError};
 use std::{fmt, time::Duration};
@@ -45,6 +49,8 @@ pub enum Error {
     HandshakeTimeout,
     /// Invalid key provided to construct an Initiator or Responder
     InvalidKey,
+    /// DNS resolution failed for a hostname
+    DnsResolutionFailed(String),
 }
 
 impl fmt::Display for Error {
@@ -65,6 +71,8 @@ impl fmt::Display for Error {
             Error::HandshakeTimeout => write!(f, "Handshake timeout"),
 
             Error::InvalidKey => write!(f, "Invalid key provided for handshake"),
+
+            Error::DnsResolutionFailed(msg) => write!(f, "DNS resolution failed: {msg}"),
         }
     }
 }
@@ -84,6 +92,12 @@ impl From<RecvError> for Error {
 impl<T> From<SendError<T>> for Error {
     fn from(_: SendError<T>) -> Self {
         Error::SendError
+    }
+}
+
+impl From<ResolveError> for Error {
+    fn from(e: ResolveError) -> Self {
+        Error::DnsResolutionFailed(e.to_string())
     }
 }
 

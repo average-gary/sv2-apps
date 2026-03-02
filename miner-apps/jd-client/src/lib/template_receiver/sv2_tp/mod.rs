@@ -15,11 +15,10 @@ use std::sync::Arc;
 use async_channel::{unbounded, Receiver, Sender};
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
-    config_helpers::resolve_host_port,
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
     key_utils::Secp256k1PublicKey,
-    network_helpers::{self, connect_with_noise},
+    network_helpers::{self, connect_with_noise, resolve_host_port},
     stratum_core::{
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,

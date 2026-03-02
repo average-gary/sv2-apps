@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
-use tracing::info;
+use tracing::{debug, info};
 
 /// Errors that can occur during address resolution.
 #[derive(Debug)]
@@ -53,10 +53,11 @@ pub async fn resolve_host(host: &str, port: u16) -> Result<SocketAddr, ResolveEr
     let addr = tokio::net::lookup_host(&lookup)
         .await
         .map_err(ResolveError::LookupFailed)?
+        // DNS can return multiple addresses; take the first one
         .next()
         .ok_or_else(|| ResolveError::NoResults(host.to_string()))?;
 
-    info!("Resolved '{host}' -> {addr}");
+    debug!("Resolved '{host}' -> {addr}");
     Ok(addr)
 }
 
@@ -85,10 +86,11 @@ pub async fn resolve_host_port(addr: &str) -> Result<SocketAddr, ResolveError> {
     let resolved = tokio::net::lookup_host(addr)
         .await
         .map_err(ResolveError::LookupFailed)?
+        // DNS can return multiple addresses; take the first one
         .next()
         .ok_or_else(|| ResolveError::NoResults(addr.to_string()))?;
 
-    info!("Resolved '{addr}' -> {resolved}");
+    debug!("Resolved '{addr}' -> {resolved}");
     Ok(resolved)
 }
 

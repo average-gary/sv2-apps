@@ -8,9 +8,8 @@ use crate::{
 use async_channel::{unbounded, Receiver, Sender};
 use std::{net::SocketAddr, sync::Arc};
 use stratum_apps::{
-    config_helpers::resolve_host,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::{self, connect_with_noise},
+    network_helpers::{self, connect_with_noise, resolve_host},
     stratum_core::{
         binary_sv2::Seq064K,
         common_messages_sv2::{Protocol, SetupConnection},
@@ -101,7 +100,7 @@ impl Upstream {
                     "Failed to resolve upstream address {}:{}: {e}",
                     upstream.host, upstream.port
                 );
-                TproxyError::fallback(TproxyErrorKind::CouldNotInitiateSystem)
+                TproxyError::fallback(TproxyErrorKind::NetworkHelpersError(e.into()))
             })?;
 
         match TcpStream::connect(resolved_addr).await {

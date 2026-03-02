@@ -3,10 +3,9 @@ use std::{net::SocketAddr, sync::Arc};
 use async_channel::{unbounded, Receiver, Sender};
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
-    config_helpers::resolve_host,
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::connect_with_noise,
+    network_helpers::{connect_with_noise, resolve_host},
     stratum_core::{
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,
@@ -81,7 +80,7 @@ impl JobDeclarator {
                     "Failed to resolve JDS address {}:{}: {e}",
                     upstream_entry.jds_host, upstream_entry.jds_port
                 );
-                JDCError::fallback(JDCErrorKind::CouldNotInitiateSystem)
+                JDCError::fallback(JDCErrorKind::NetworkHelpersError(e.into()))
             })?;
 
         info!("Connecting to JD Server at {addr}");

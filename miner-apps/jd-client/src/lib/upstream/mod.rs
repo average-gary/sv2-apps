@@ -14,10 +14,9 @@ use std::{net::SocketAddr, sync::Arc};
 use async_channel::{unbounded, Receiver, Sender};
 use bitcoin_core_sv2::CancellationToken;
 use stratum_apps::{
-    config_helpers::resolve_host,
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::connect_with_noise,
+    network_helpers::{connect_with_noise, resolve_host},
     stratum_core::{
         binary_sv2::Seq064K, extensions_sv2::RequestExtensions, framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync, parsers_sv2::AnyMessage,
@@ -94,7 +93,7 @@ impl Upstream {
                     "Failed to resolve pool address {}:{}: {e}",
                     upstream_entry.pool_host, upstream_entry.pool_port
                 );
-                JDCError::fallback(JDCErrorKind::CouldNotInitiateSystem)
+                JDCError::fallback(JDCErrorKind::NetworkHelpersError(e.into()))
             })?;
 
         let stream = tokio::time::timeout(
