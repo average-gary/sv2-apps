@@ -280,6 +280,8 @@ pub enum JDCErrorKind {
     InvalidCoinbaseOutput,
     /// Cannot initialize monitoring tasks
     MonitoringServerError(String),
+    /// Invalid configuration
+    InvalidConfiguration(String),
 }
 
 impl std::error::Error for JDCErrorKind {}
@@ -433,6 +435,7 @@ impl fmt::Display for JDCErrorKind {
             ),
             InvalidCoinbaseOutput => write!(f, "Invalid coinbase output in config"),
             MonitoringServerError(e) => write!(f, "Failed to initialize monitoring tasks: `{e:?}`"),
+            InvalidConfiguration(msg) => write!(f, "Invalid configuration: {msg}"),
         }
     }
 }

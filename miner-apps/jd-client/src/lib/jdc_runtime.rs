@@ -134,12 +134,8 @@ impl<State> JdcRuntime<State> {
         channel_manager: &ChannelManager,
         monitoring_addr: SocketAddr,
     ) -> Result<(), String> {
-        let refresh_interval = Duration::from_secs(
-            self.jd_client
-                .config
-                .monitoring_cache_refresh_secs()
-                .unwrap_or(15),
-        );
+        let refresh_interval =
+            Duration::from_secs(self.jd_client.config.monitoring_cache_refresh_secs());
 
         let monitoring_server = stratum_apps::monitoring::MonitoringServer::new(
             monitoring_addr,

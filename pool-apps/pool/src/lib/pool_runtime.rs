@@ -530,12 +530,7 @@ impl PoolRuntime<ChannelManagerReady> {
                 monitoring_addr,
                 None, // Pool doesn't have channels opened with servers
                 Some(Arc::new(self.state.channel_manager.clone())), // channels opened with clients
-                std::time::Duration::from_secs(
-                    self.pool
-                        .config
-                        .monitoring_cache_refresh_secs()
-                        .unwrap_or(15),
-                ),
+                std::time::Duration::from_secs(self.pool.config.monitoring_cache_refresh_secs()),
             ) {
                 Ok(ms) => ms,
                 Err(err) => {

@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use std::{
     collections::{BinaryHeap, VecDeque},
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -19,11 +20,12 @@ use stratum_apps::{
     bitcoin_core_sv2::CancellationToken,
     channel_utils::ReceiverCleanup,
     coinbase_output_constraints::coinbase_output_constraints_message,
+    config_helpers::XpubDerivator,
     fallback_coordinator::FallbackCoordinator,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     network_helpers::accept_noise_connection,
     stratum_core::{
-        bitcoin::{Amount, Target, TxOut},
+        bitcoin::{consensus::Encodable, Amount, Target, TxOut},
         channels_sv2::{
             Vardiff, VardiffState,
             client::extended::ExtendedChannel,
@@ -312,6 +314,9 @@ pub struct ChannelManager {
     pub mode: JDMode,
     #[cfg(feature = "monitoring")]
     pub(crate) miner_telemetry: MinerTelemetryState,
+    /// Optional xpub derivator for coinbase rotation in solo mining mode.
+    /// When configured with a wildcard descriptor, derives new addresses on each block found.
+    xpub_derivator: Option<Arc<XpubDerivator>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -398,6 +403,73 @@ impl ChannelManager {
             ExtranonceAllocator::new(Vec::new(), SOLO_FULL_EXTRANONCE_SIZE, JDC_MAX_CHANNELS)
                 .map_err(JDCError::<error::ChannelManager>::shutdown)?;
 
+        // Initialize XpubDerivator for coinbase rotation if configured with wildcard descriptor.
+        // This must be done BEFORE building the channel manager so we can use the
+        // derivator's current_script_pubkey() for the initial coinbase_outputs.
+        let xpub_derivator = if config.coinbase_reward_script().has_wildcard() {
+            let descriptor_str = config
+                .coinbase_reward_script()
+                .wildcard_descriptor_str()
+                .expect("wildcard descriptor must be present when has_wildcard() is true");
+
+            let index_file = config.coinbase_index_file().map(PathBuf::from).ok_or_else(|| {
+                error!("coinbase_index_file is required when coinbase_reward_script has a wildcard");
+                JDCError::shutdown(JDCErrorKind::InvalidConfiguration(
+                    "coinbase_index_file is required when coinbase_reward_script has a wildcard"
+                        .to_string(),
+                ))
+            })?;
+
+            let derivator =
+                XpubDerivator::new(descriptor_str, config.coinbase_start_index(), index_file)
+                    .map_err(|e| {
+                        error!("Failed to initialize XpubDerivator: {}", e);
+                        JDCError::shutdown(JDCErrorKind::InvalidConfiguration(format!(
+                            "failed to initialize coinbase rotation: {e}"
+                        )))
+                    })?;
+
+            info!(
+                "Coinbase rotation enabled: starting at index {}",
+                derivator.current_index()
+            );
+
+            Some(Arc::new(derivator))
+        } else {
+            None
+        };
+
+        // If we have an xpub derivator, use its current_script_pubkey() for the initial
+        // coinbase_outputs. This ensures we use the correct address from the persisted
+        // index (or start_index) rather than always using index 0.
+        let coinbase_outputs = if let Some(ref derivator) = xpub_derivator {
+            match derivator.current_script_pubkey() {
+                Ok(script) => {
+                    let txout = TxOut {
+                        value: Amount::from_sat(0),
+                        script_pubkey: script,
+                    };
+                    let mut encoded = vec![];
+                    if let Err(e) = vec![txout].consensus_encode(&mut encoded) {
+                        error!("Failed to encode coinbase outputs from derivator: {}", e);
+                        return Err(JDCError::shutdown(JDCErrorKind::InvalidConfiguration(
+                            format!("failed to encode coinbase outputs: {e}"),
+                        )));
+                    }
+                    encoded
+                }
+                Err(e) => {
+                    error!("Failed to derive initial coinbase script: {}", e);
+                    return Err(JDCError::shutdown(JDCErrorKind::InvalidConfiguration(
+                        format!("failed to derive initial coinbase script: {e}"),
+                    )));
+                }
+            }
+        } else {
+            // No derivator - use the passed-in coinbase_outputs (static address)
+            coinbase_outputs
+        };
+
         let channel_manager_io = ChannelManagerIo {
             upstream_sender,
             upstream_receiver,
@@ -446,6 +518,7 @@ impl ChannelManager {
                 config.miner_telemetry_cidrs().to_vec(),
                 config.listening_address().port(),
             ),
+            xpub_derivator,
         };
 
         Ok(channel_manager)
@@ -1472,5 +1545,60 @@ impl ChannelManager {
             })?;
 
         Ok(())
+    }
+
+    /// Rotates the coinbase address to the next derived address.
+    ///
+    /// This method is called when a block is found in solo mining mode.
+    /// It derives the next sequential address, then updates the
+    /// `coinbase_outputs` used for future templates.
+    ///
+    /// Only effective when:
+    /// 1. `xpub_derivator` is configured (wildcard descriptor)
+    /// 2. JDC is in solo mining mode
+    ///
+    /// The index is persisted to disk for restart recovery.
+    pub fn rotate_coinbase_address(&self) {
+        // Only rotate if we have an xpub derivator configured
+        let Some(derivator) = &self.xpub_derivator else {
+            return;
+        };
+
+        // Only rotate in solo mining mode
+        if self.upstream_state.get() != UpstreamState::SoloMining {
+            debug!("Skipping coinbase rotation: not in solo mining mode");
+            return;
+        }
+
+        match derivator.next_script_pubkey() {
+            Ok(script_pubkey) => {
+                let new_index = derivator.current_index();
+                info!(
+                    "Coinbase rotation: rotated to index {} (script: {})",
+                    new_index,
+                    script_pubkey.to_hex_string()
+                );
+
+                // Create new TxOut with the derived script
+                let new_output = TxOut {
+                    value: Amount::from_sat(0), // Value will be set from template
+                    script_pubkey,
+                };
+
+                // Serialize the new output
+                let mut output_bytes = Vec::new();
+                new_output
+                    .consensus_encode(&mut output_bytes)
+                    .expect("TxOut encoding should never fail");
+
+                // Update coinbase_outputs used for future templates
+                if let Err(e) = self.coinbase_outputs.set(output_bytes) {
+                    error!("Failed to update coinbase outputs: {:?}", e);
+                }
+            }
+            Err(e) => {
+                error!("Failed to rotate coinbase address: {}", e);
+            }
+        }
     }
 }

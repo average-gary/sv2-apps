@@ -851,6 +851,13 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
                 Ok(messages)
             })?;
 
+        let block_found = messages.iter().any(|m| {
+            matches!(
+                m,
+                RouteMessageTo::TemplateProvider(TemplateDistributionOwned::SubmitSolution(_))
+            )
+        });
+
         for message in messages {
             // A send can only fail if the receiver side of the channel is closed.
             // Since this is an unbounded channel, it cannot fail due to capacity
@@ -858,6 +865,10 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
             if let Err(e) = message.forward(&self.channel_manager_io).await {
                 error!("Failed to forward message {e:?}");
             }
+        }
+
+        if block_found {
+            self.rotate_coinbase_address();
         }
 
         Ok(())
@@ -1119,6 +1130,13 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
                 Ok(messages)
             })?;
 
+        let block_found = messages.iter().any(|m| {
+            matches!(
+                m,
+                RouteMessageTo::TemplateProvider(TemplateDistributionOwned::SubmitSolution(_))
+            )
+        });
+
         for message in messages {
             // A send can only fail if the receiver side of the channel is closed.
             // Since this is an unbounded channel, it cannot fail due to capacity
@@ -1126,6 +1144,10 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
             if let Err(e) = message.forward(&self.channel_manager_io).await {
                 error!("Failed to forward message {e:?}");
             }
+        }
+
+        if block_found {
+            self.rotate_coinbase_address();
         }
 
         Ok(())

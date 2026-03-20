@@ -16,11 +16,11 @@ use stratum_apps::{
     bitcoin_core_sv2::CancellationToken,
     channel_utils::ReceiverCleanup,
     coinbase_output_constraints::coinbase_output_constraints_message_with_offset,
-    config_helpers::CoinbaseRewardScript,
+    config_helpers::{CoinbaseRewardScript, XpubDerivator},
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     network_helpers::accept_noise_connection,
     stratum_core::{
-        bitcoin::{Amount, TxOut},
+        bitcoin::{consensus::Encodable, Amount, TxOut},
         channels_sv2::{
             Vardiff, VardiffState,
             extranonce_manager::{ExtranonceAllocator, bytes_needed},
@@ -101,8 +101,9 @@ pub struct ChannelManager {
     // Mapping of `(downstream_id, channel_id)` -> vardiff controller.
     // Each entry manages variable difficulty for a specific downstream channel.
     pub(crate) vardiff: SharedMap<VardiffKey, VardiffState>,
-    // Coinbase outputs.
-    pub(crate) coinbase_outputs: Vec<u8>,
+    // Coinbase outputs. Wrapped in `SharedLock` because the xpub derivator
+    // may rotate the active script at runtime when a block is found.
+    pub(crate) coinbase_outputs: SharedLock<Vec<u8>>,
     // Last new prevhash.
     pub(crate) last_new_prev_hash: SharedLock<Option<SetNewPrevHashOwned>>,
     // Last future template.
@@ -118,6 +119,9 @@ pub struct ChannelManager {
     required_extensions: Vec<u16>,
     /// Embedded Job Declaration engine (present when `[jds]` config is set).
     job_declarator: Option<JobDeclarator>,
+    /// Optional xpub derivator for coinbase rotation.
+    /// When set, the coinbase address rotates to a new derived address after each block is found.
+    xpub_derivator: Option<Arc<XpubDerivator>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -176,19 +180,78 @@ impl ChannelManager {
             ExtranonceAllocator::new(local_prefix_bytes, FULL_EXTRANONCE_SIZE, POOL_MAX_CHANNELS)
                 .map_err(PoolError::shutdown)?;
 
+        // Initialize xpub derivator if the coinbase reward script has a wildcard.
+        // We use its current_script_pubkey() for the initial coinbase_outputs so
+        // we use the correct address from the persisted index (or start_index)
+        // rather than always using index 0.
+        let xpub_derivator = if config.coinbase_reward_script().has_wildcard() {
+            let descriptor_str = config
+                .coinbase_reward_script()
+                .wildcard_descriptor_str()
+                .expect("wildcard descriptor must exist when has_wildcard() is true");
+
+            let index_file = config.coinbase_index_file().ok_or_else(|| {
+                error!("coinbase_index_file is required when using a wildcard descriptor");
+                PoolError::shutdown(PoolErrorKind::InvalidConfiguration)
+            })?;
+
+            match XpubDerivator::new(
+                descriptor_str,
+                config.coinbase_start_index(),
+                index_file.to_path_buf(),
+            ) {
+                Ok(derivator) => {
+                    info!(
+                        "Coinbase rotation enabled. Starting at index {}, persisting to {:?}",
+                        derivator.current_index(),
+                        index_file
+                    );
+                    Some(Arc::new(derivator))
+                }
+                Err(e) => {
+                    error!("Failed to initialize xpub derivator: {}", e);
+                    return Err(PoolError::shutdown(PoolErrorKind::InvalidConfiguration));
+                }
+            }
+        } else {
+            None
+        };
+
+        let coinbase_outputs = if let Some(ref derivator) = xpub_derivator {
+            match derivator.current_script_pubkey() {
+                Ok(script) => {
+                    let txout = TxOut {
+                        value: Amount::from_sat(0),
+                        script_pubkey: script,
+                    };
+                    let mut encoded = vec![];
+                    if let Err(e) = vec![txout].consensus_encode(&mut encoded) {
+                        error!("Failed to encode coinbase outputs from derivator: {}", e);
+                        return Err(PoolError::shutdown(PoolErrorKind::InvalidConfiguration));
+                    }
+                    encoded
+                }
+                Err(e) => {
+                    error!("Failed to derive initial coinbase script: {}", e);
+                    return Err(PoolError::shutdown(PoolErrorKind::InvalidConfiguration));
+                }
+            }
+        } else {
+            coinbase_outputs
+        };
+
         let channel_manager_io = ChannelManagerIo {
             tp_sender,
             tp_receiver,
             downstream_sender: SharedMap::new(),
             downstream_receiver,
         };
-
         let channel_manager = ChannelManager {
             downstreams: SharedMap::new(),
             extranonce_allocator: SharedLock::new(extranonce_allocator),
             downstream_id_factory: Arc::new(AtomicUsize::new(1)),
             vardiff: SharedMap::new(),
-            coinbase_outputs,
+            coinbase_outputs: SharedLock::new(coinbase_outputs),
             last_future_template: SharedLock::new(None),
             last_new_prev_hash: SharedLock::new(None),
             channel_manager_io,
@@ -199,6 +262,7 @@ impl ChannelManager {
             supported_extensions: config.supported_extensions().to_vec(),
             required_extensions: config.required_extensions().to_vec(),
             job_declarator,
+            xpub_derivator,
         };
 
         Ok(channel_manager)
@@ -749,6 +813,48 @@ impl ChannelManager {
                     downstream_id,
                 )
             }),
+        }
+    }
+
+    /// Rotates the coinbase address to the next derived address.
+    ///
+    /// This should be called after a block is found. It derives the next
+    /// sequential address, persists the index to disk, and updates the
+    /// internal coinbase_outputs for future templates.
+    ///
+    /// If no xpub derivator is configured (static address), this is a no-op.
+    pub fn rotate_coinbase_address(&self) {
+        let Some(derivator) = &self.xpub_derivator else {
+            return;
+        };
+
+        match derivator.next_script_pubkey() {
+            Ok(new_script) => {
+                let new_index = derivator.current_index();
+                info!(
+                    "Rotated coinbase address to index {}. New script: {}",
+                    new_index,
+                    new_script.to_hex_string()
+                );
+
+                let new_txout = TxOut {
+                    value: Amount::from_sat(0),
+                    script_pubkey: new_script,
+                };
+
+                let mut new_outputs = vec![];
+                if let Err(e) = vec![new_txout].consensus_encode(&mut new_outputs) {
+                    error!("Failed to encode new coinbase outputs: {}", e);
+                    return;
+                }
+
+                if let Err(e) = self.coinbase_outputs.set(new_outputs) {
+                    error!("Failed to update coinbase outputs: {:?}", e);
+                }
+            }
+            Err(e) => {
+                error!("Failed to rotate coinbase address: {}", e);
+            }
         }
     }
 }

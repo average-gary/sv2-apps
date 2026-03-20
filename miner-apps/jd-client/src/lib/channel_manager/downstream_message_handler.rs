@@ -912,6 +912,9 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
         };
 
         let vardiff_key = (downstream_id, channel_id).into();
+        // Tracks whether a block was found so we can rotate the coinbase address
+        // afterwards (only effective in solo mining mode with a wildcard descriptor).
+        let block_found = std::cell::Cell::new(false);
         let messages = self.with_registered_downstream(downstream_id, |downstream| {
             let validation = downstream.standard_channels.with_mut(&channel_id, |standard_channel| {
                 let mut messages: Vec<RouteMessageTo> = vec![];
@@ -944,6 +947,7 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
                         info!("SubmitSharesStandard on downstream channel: 💰 Block Found!!! 💰{share_hash}");
                         downstream_share_hash = Some(share_hash);
                         is_downstream_share_valid = true;
+                        block_found.set(true);
                         if let Some(template_id) = template_id {
                             info!("SubmitSharesStandard: Propagating solution to the Template Provider.");
                             let solution = SubmitSolutionOwned {
@@ -1137,6 +1141,12 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
             }
         }
 
+        // Rotate coinbase address if a block was found. This is a no-op unless the
+        // JDC is in solo mining mode and configured with a wildcard descriptor.
+        if block_found.get() {
+            self.rotate_coinbase_address();
+        }
+
         Ok(())
     }
 
@@ -1181,6 +1191,9 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
         };
 
         let vardiff_key = (downstream_id, channel_id).into();
+        // Tracks whether a block was found so we can rotate the coinbase address
+        // afterwards (only effective in solo mining mode with a wildcard descriptor).
+        let block_found = std::cell::Cell::new(false);
         let messages = self.with_registered_downstream(downstream_id, |downstream| {
             let validation = downstream.extended_channels.with_mut(&channel_id, |extended_channel| {
                 let mut messages: Vec<RouteMessageTo> = vec![];
@@ -1229,6 +1242,7 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
                     Ok(ShareValidationResult::BlockFound(share_hash, template_id, coinbase)) => {
                         info!("SubmitSharesExtended on downstream channel: 💰 Block Found!!! 💰{share_hash}");
                         downstream_share_hash = Some(share_hash);
+                        block_found.set(true);
                         if let Some(template_id) = template_id {
                             info!("SubmitSharesExtended: Propagating solution to the Template Provider.");
                             let solution = SubmitSolutionOwned {
@@ -1429,6 +1443,12 @@ impl HandleMiningMessagesFromClientOwnedAsync for ChannelManager {
             if let Err(e) = message.forward(&self.channel_manager_io).await {
                 tracing::error!("Failed to forward message {e:?}");
             }
+        }
+
+        // Rotate coinbase address if a block was found. This is a no-op unless the
+        // JDC is in solo mining mode and configured with a wildcard descriptor.
+        if block_found.get() {
+            self.rotate_coinbase_address();
         }
 
         Ok(())

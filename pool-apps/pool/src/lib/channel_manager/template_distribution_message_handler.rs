@@ -45,8 +45,9 @@ impl HandleTemplateDistributionMessagesFromServerOwnedAsync for ChannelManager {
         }
 
         let mut messages: Vec<RouteMessageTo> = Vec::new();
+        let coinbase_outputs_bytes = self.coinbase_outputs.get().map_err(PoolError::shutdown)?;
         let mut coinbase_output =
-            deserialize_outputs(self.coinbase_outputs.clone()).expect("deserialization failed");
+            deserialize_outputs(coinbase_outputs_bytes).expect("deserialization failed");
         coinbase_output[0].value = Amount::from_sat(msg.coinbase_tx_value_remaining);
 
         self.downstreams.try_for_each(|downstream_id, downstream| {
