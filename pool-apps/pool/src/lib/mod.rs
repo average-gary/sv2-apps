@@ -126,7 +126,10 @@ impl PoolSv2 {
             jd.clone()
                 .start_downstream_server(
                     *jds_config.authority_public_key(),
-                    *jds_config.authority_secret_key(),
+                    jds_config
+                        .authority_secret_key()
+                        .expect("authority_secret_key must be set")
+                        .clone(),
                     jds_config.cert_validity_sec(),
                     *jds_config.listen_address(),
                     task_manager.clone(),

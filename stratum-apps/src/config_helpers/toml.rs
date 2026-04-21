@@ -1,8 +1,9 @@
+use crate::key_utils::Secp256k1SecretKey;
 use serde::{
     de::{self, Deserializer},
     Deserialize,
 };
-use std::{path::PathBuf, time::Duration};
+use std::{env, path::PathBuf, time::Duration};
 
 /// Deserialize a duration from a TOML string.
 pub fn duration_from_toml<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -58,6 +59,27 @@ where
         Ok(PathBuf::from(expanded.to_string()))
     })
     .transpose()
+}
+
+/// Loads an authority secret key from an environment variable.
+/// Returns None if the env var is not set or empty.
+/// Returns Some(key) if the env var contains a valid base58-encoded secret key.
+/// Returns an error if the env var is set but contains an invalid key.
+pub fn secret_key_from_env(
+    env_var: &str,
+) -> Result<Option<Secp256k1SecretKey>, Box<dyn std::error::Error>> {
+    let value = match env::var(env_var) {
+        Ok(v) => v,
+        Err(env::VarError::NotPresent) => return Ok(None),
+        Err(e) => return Err(Box::new(e)),
+    };
+
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    let key = value.parse::<Secp256k1SecretKey>()?;
+    Ok(Some(key))
 }
 
 #[cfg(test)]

@@ -15,12 +15,13 @@ use std::{
 
 pub use jd_server_sv2::config::{JDSConfig, JDSPartialConfig};
 use stratum_apps::{
-    config_helpers::{opt_path_from_toml, CoinbaseRewardScript},
+    config_helpers::{opt_path_from_toml, secret_key_from_env, CoinbaseRewardScript},
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     stratum_core::bitcoin::{Amount, TxOut},
     tp_type::TemplateProviderType,
     utils::types::{SharesBatchSize, SharesPerMinute},
 };
+use tracing::warn;
 
 use crate::error::PoolErrorKind;
 
@@ -30,7 +31,8 @@ pub struct PoolConfig {
     listen_address: SocketAddr,
     template_provider_type: TemplateProviderType,
     authority_public_key: Secp256k1PublicKey,
-    authority_secret_key: Secp256k1SecretKey,
+    #[serde(default)]
+    authority_secret_key: Option<Secp256k1SecretKey>,
     cert_validity_sec: u64,
     coinbase_reward_script: CoinbaseRewardScript,
     pool_signature: String,
@@ -77,7 +79,7 @@ impl PoolConfig {
             listen_address: pool_connection.listen_address,
             template_provider_type,
             authority_public_key: authority_config.public_key,
-            authority_secret_key: authority_config.secret_key,
+            authority_secret_key: Some(authority_config.secret_key),
             cert_validity_sec: pool_connection.cert_validity_sec,
             coinbase_reward_script,
             pool_signature: pool_connection.signature,
@@ -110,7 +112,19 @@ impl PoolConfig {
 
     /// Returns the authority secret key.
     pub fn authority_secret_key(&self) -> &Secp256k1SecretKey {
-        &self.authority_secret_key
+        self.authority_secret_key
+            .as_ref()
+            .expect("authority secret key not set")
+    }
+
+    /// Returns the authority secret key if set.
+    pub fn authority_secret_key_opt(&self) -> Option<&Secp256k1SecretKey> {
+        self.authority_secret_key.as_ref()
+    }
+
+    /// Sets the authority secret key.
+    pub fn set_authority_secret_key(&mut self, key: Secp256k1SecretKey) {
+        self.authority_secret_key = Some(key);
     }
 
     /// Returns the certificate validity in seconds.
@@ -196,10 +210,28 @@ impl PoolConfig {
             return Ok(None);
         };
 
+        let env_secret_key = secret_key_from_env("JDS_AUTHORITY_SECRET_KEY").map_err(|e| {
+            PoolErrorKind::Custom(format!("Failed to parse JDS_AUTHORITY_SECRET_KEY: {}", e))
+        })?;
+
+        let authority_secret_key = match (&env_secret_key, &self.authority_secret_key) {
+            (Some(env_key), Some(_toml_key)) => {
+                warn!("Both JDS_AUTHORITY_SECRET_KEY env var and config file have authority secret key. Using env var value. Consider removing the key from your config file.");
+                Some(env_key.clone())
+            }
+            (Some(env_key), None) => Some(env_key.clone()),
+            (None, Some(toml_key)) => Some(toml_key.clone()),
+            (None, None) => {
+                return Err(PoolErrorKind::Custom(
+                    "No authority secret key found for JDS. Set JDS_AUTHORITY_SECRET_KEY env var or configure authority_secret_key in the config file.".to_string(),
+                ));
+            }
+        };
+
         let jds_config = JDSConfig::from_partial(
             jds_partial,
             self.authority_public_key,
-            self.authority_secret_key,
+            authority_secret_key,
             self.cert_validity_sec,
             self.coinbase_reward_script.clone(),
         );

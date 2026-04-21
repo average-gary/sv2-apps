@@ -24,7 +24,8 @@ pub struct JobDeclaratorClientConfig {
     // The public key used by this JDC for noise encryption.
     authority_public_key: Secp256k1PublicKey,
     /// The secret key used by this JDC for noise encryption.
-    authority_secret_key: Secp256k1SecretKey,
+    #[serde(default)]
+    authority_secret_key: Option<Secp256k1SecretKey>,
     /// The validity period (in seconds) for the certificate used in noise.
     cert_validity_sec: u64,
     /// The template provider type that this JDC will use.
@@ -85,7 +86,7 @@ impl JobDeclaratorClientConfig {
             max_supported_version: protocol_config.max_supported_version,
             min_supported_version: protocol_config.min_supported_version,
             authority_public_key: pool_config.authority_public_key,
-            authority_secret_key: pool_config.authority_secret_key,
+            authority_secret_key: Some(pool_config.authority_secret_key),
             cert_validity_sec,
             template_provider_type,
             upstreams,
@@ -131,8 +132,13 @@ impl JobDeclaratorClientConfig {
     }
 
     /// Returns the authority secret key.
-    pub fn authority_secret_key(&self) -> &Secp256k1SecretKey {
-        &self.authority_secret_key
+    pub fn authority_secret_key(&self) -> Option<&Secp256k1SecretKey> {
+        self.authority_secret_key.as_ref()
+    }
+
+    /// Sets the authority secret key.
+    pub fn set_authority_secret_key(&mut self, key: Secp256k1SecretKey) {
+        self.authority_secret_key = Some(key);
     }
 
     /// Returns the certificate validity in seconds.

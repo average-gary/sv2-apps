@@ -35,7 +35,7 @@ pub struct JDSPartialConfig {
 pub struct JDSConfig {
     listen_address: SocketAddr,
     authority_public_key: Secp256k1PublicKey,
-    authority_secret_key: Secp256k1SecretKey,
+    authority_secret_key: Option<Secp256k1SecretKey>,
     cert_validity_sec: u64,
     coinbase_reward_script: CoinbaseRewardScript,
     supported_extensions: Vec<u16>,
@@ -63,7 +63,7 @@ impl JDSConfig {
     pub fn new(
         listen_address: SocketAddr,
         authority_public_key: Secp256k1PublicKey,
-        authority_secret_key: Secp256k1SecretKey,
+        authority_secret_key: Option<Secp256k1SecretKey>,
         cert_validity_sec: u64,
         coinbase_reward_script: CoinbaseRewardScript,
         supported_extensions: Vec<u16>,
@@ -88,7 +88,7 @@ impl JDSConfig {
     pub fn from_partial(
         partial: JDSPartialConfig,
         authority_public_key: Secp256k1PublicKey,
-        authority_secret_key: Secp256k1SecretKey,
+        authority_secret_key: Option<Secp256k1SecretKey>,
         cert_validity_sec: u64,
         coinbase_reward_script: CoinbaseRewardScript,
     ) -> Self {
@@ -114,8 +114,8 @@ impl JDSConfig {
     }
 
     /// Authority secret key used for the Noise handshake with downstreams.
-    pub fn authority_secret_key(&self) -> &Secp256k1SecretKey {
-        &self.authority_secret_key
+    pub fn authority_secret_key(&self) -> Option<&Secp256k1SecretKey> {
+        self.authority_secret_key.as_ref()
     }
 
     /// Validity period (seconds) for the Noise certificate.

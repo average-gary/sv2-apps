@@ -339,7 +339,10 @@ impl JobDeclaratorClient {
             .clone()
             .start_downstream_server(
                 *self.config.authority_public_key(),
-                *self.config.authority_secret_key(),
+                *self
+                    .config
+                    .authority_secret_key()
+                    .expect("authority_secret_key must be set"),
                 self.config.cert_validity_sec(),
                 *self.config.listening_address(),
                 task_manager.clone(),
@@ -541,7 +544,7 @@ impl JobDeclaratorClient {
                                 _ = channel_manager_clone.clone()
                                     .start_downstream_server(
                                         *self.config.authority_public_key(),
-                                        *self.config.authority_secret_key(),
+                                        *self.config.authority_secret_key().expect("authority_secret_key must be set"),
                                         self.config.cert_validity_sec(),
                                         *self.config.listening_address(),
                                         task_manager.clone(),

@@ -13,4 +13,4 @@ pub use coinbase_output::{CoinbaseRewardScript, Error as CoinbaseOutputError};
 pub mod logging;
 
 mod toml;
-pub use toml::{duration_from_toml, opt_path_from_toml};
+pub use toml::{duration_from_toml, opt_path_from_toml, secret_key_from_env};
