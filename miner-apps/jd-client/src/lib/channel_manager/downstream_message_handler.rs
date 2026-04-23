@@ -346,13 +346,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                             build_error("invalid-nominal-hashrate"),
                                         )
                                             .into()]),
-                                        StandardChannelError::RequestedMaxTargetOutOfRange => {
-                                            Ok(vec![(
-                                                downstream_id,
-                                                build_error("max-target-out-of-range"),
-                                            )
-                                                .into()])
-                                        }
                                         other => Err(JDCError::disconnect(other, downstream_id)),
                                     };
                                 }
@@ -602,13 +595,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                             build_error("invalid-nominal-hashrate"),
                                         )
                                             .into()]),
-                                        ExtendedChannelError::RequestedMaxTargetOutOfRange => {
-                                            Ok(vec![(
-                                                downstream_id,
-                                                build_error("max-target-out-of-range"),
-                                            )
-                                                .into()])
-                                        }
                                         other => Err(JDCError::disconnect(other, downstream_id)),
                                     };
                                 }
@@ -809,9 +795,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                         StandardChannelError::InvalidNominalHashrate => {
                                             "invalid-nominal-hashrate"
                                         }
-                                        StandardChannelError::RequestedMaxTargetOutOfRange => {
-                                            "requested-max-target-out-of-range"
-                                        }
                                         _ => "internal-error",
                                     };
                                     if err_code == "internal-error" {
@@ -845,9 +828,6 @@ impl HandleMiningMessagesFromClientAsync for ChannelManager {
                                     let err_code = match e {
                                         ExtendedChannelError::InvalidNominalHashrate => {
                                             "invalid-nominal-hashrate"
-                                        }
-                                        ExtendedChannelError::RequestedMaxTargetOutOfRange => {
-                                            "requested-max-target-out-of-range"
                                         }
                                         _ => "internal-error",
                                     };
