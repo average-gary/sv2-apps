@@ -58,9 +58,51 @@ port = 3333
 authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
 user_identity = "your_primary_username_here"
 
+# Optional iroh transport per-peer fields. Only honored when the translator
+# is built with the `iroh-transport` feature AND the top-level `[iroh]`
+# block below is present. When the feature is off, these fields are ignored.
+#
+# iroh_node_id    — base32-lowercase NodeId of the upstream (peer must publish
+#                   it via discovery, or it must be supplied via
+#                   `[iroh.connection_overrides]` below).
+# iroh_relay_url  — optional relay URL hint for this peer; empty string ⇒ none.
+# prefer_transport — one of: "tcp", "iroh", "iroh_then_tcp" (default),
+#                   "tcp_then_iroh".
+# iroh_node_id    = "k51qzi5uqu5dl..."
+# iroh_relay_url  = ""
+# prefer_transport = "iroh_then_tcp"
+
 # Braiins Pool Backup Pool
 [[upstreams]]
 address = "107.170.42.64"
 port = 3333
 authority_pubkey = "9awtMD5KQgvRUh2yFbjVeT7b6hjipWcAsQHd6wEhgtDT9soosna"
 user_identity = "your_backup_username_here"
+
+# Optional iroh transport — see the §"Per-role `[iroh]` section (TOML)" of
+# the playbook for the full schema. Required when any `[[upstreams]]` entry
+# above sets `iroh_node_id`. Drop this block (or leave it commented out) for
+# pure TCP behavior.
+#
+# [iroh]
+# listen_address     = "0.0.0.0:0"
+# secret_key_path    = "~/.config/sv2/translator/iroh-secret.ed25519"
+# # relay_url        = ""
+# # max_idle_timeout_secs    = 60
+# # keep_alive_interval_secs = 30
+# # per_request_timeout_secs = 30
+# #
+# # Per-mechanism discovery toggles. All default to the values shown.
+# # discovery_relay_enable      = true
+# # discovery_pkarr_pub_enable  = true
+# # discovery_pkarr_res_enable  = true
+# # discovery_dht_enable        = false
+# # discovery_n0_enable         = true
+# #
+# # Connection-overrides escape hatch for known operator-supplied dials.
+# # [iroh.connection_overrides]
+# # "k51qzi5uqu5dl..." = "192.0.2.5:34256"
+# #
+# # The translator is a *client* role and never accepts SV2 connections, so
+# # the [iroh.admission] section is unused here. Leaving the default ("open")
+# # has no effect on outbound dials.

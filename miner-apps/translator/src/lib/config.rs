@@ -20,6 +20,8 @@ use stratum_apps::{
     payout::{MissingMinerPayoutMode, PayoutMode, PayoutModeError},
     utils::types::{Hashrate, SharesPerMinute},
 };
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::transport::PreferTransport;
 
 /// Configuration for the Translator.
 #[derive(Debug, Deserialize, Clone)]
@@ -60,6 +62,18 @@ pub struct TranslatorConfig {
     monitoring_address: Option<SocketAddr>,
     #[serde(default)]
     monitoring_cache_refresh_secs: Option<u64>,
+    /// Optional iroh transport configuration. The translator does not host an
+    /// SV2 listener, but it dials the upstream pool — when this section is
+    /// present, the translator builds an iroh
+    /// [`Endpoint`](iroh::Endpoint) at startup and uses it to dial pools
+    /// whose `[[upstreams]]` entry carries the iroh fields described on
+    /// [`Upstream`].
+    ///
+    /// See `[iroh]` block documentation in
+    /// [`stratum_apps::network_helpers::iroh::IrohRoleConfig`].
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh: Option<stratum_apps::network_helpers::iroh::IrohRoleConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -74,6 +88,25 @@ pub struct Upstream {
     /// This will be appended with a counter for each mining channel (e.g., username.miner1,
     /// username.miner2).
     pub user_identity: String,
+    /// Optional iroh NodeId of the upstream. When set (and the
+    /// `iroh-transport` feature is enabled, plus the top-level `[iroh]` block
+    /// is configured), the translator can dial this peer over iroh in
+    /// addition to (or instead of) TCP — the actual ordering is controlled
+    /// by [`Upstream::prefer_transport`].
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh_node_id: Option<String>,
+    /// Optional iroh relay URL hint for this peer. Empty string is treated
+    /// the same as `None`.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh_relay_url: Option<String>,
+    /// Per-peer transport preference. Defaults to
+    /// [`PreferTransport::IrohThenTcp`] (i.e. iroh first, fall back to
+    /// TCP). Only meaningful when `iroh_node_id` is also set.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub prefer_transport: PreferTransport,
 }
 
 impl Upstream {
@@ -89,6 +122,12 @@ impl Upstream {
             port,
             authority_pubkey,
             user_identity,
+            #[cfg(feature = "iroh-transport")]
+            iroh_node_id: None,
+            #[cfg(feature = "iroh-transport")]
+            iroh_relay_url: None,
+            #[cfg(feature = "iroh-transport")]
+            prefer_transport: PreferTransport::default(),
         }
     }
 }
@@ -127,7 +166,16 @@ impl TranslatorConfig {
             log_file: None,
             monitoring_address,
             monitoring_cache_refresh_secs,
+            #[cfg(feature = "iroh-transport")]
+            iroh: None,
         }
+    }
+
+    /// Returns the optional iroh transport configuration. `None` when the
+    /// `[iroh]` block is absent from the TOML config — TCP-only behavior.
+    #[cfg(feature = "iroh-transport")]
+    pub fn iroh(&self) -> Option<&stratum_apps::network_helpers::iroh::IrohRoleConfig> {
+        self.iroh.as_ref()
     }
 
     /// Returns the monitoring server bind address (if enabled)

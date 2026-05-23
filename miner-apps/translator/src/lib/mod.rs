@@ -22,9 +22,10 @@ use std::{
 };
 use stratum_apps::{
     fallback_coordinator::FallbackCoordinator,
+    network_helpers::transport::{CompositeSv2Connector, Sv2Connector},
     payout::PayoutMode,
     task_manager::TaskManager,
-    utils::types::{Sv2Frame, GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS},
+    utils::types::{Message, Sv2Frame, GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -39,6 +40,11 @@ use crate::{
     sv1::Sv1Server,
     sv2::{ChannelManager, Upstream},
     utils::{TproxyMode, UpstreamEntry},
+};
+
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::iroh::{
+    alpn::SV2_POOL_ALPN, connector::IrohSv2Connector, endpoint::build_endpoint,
 };
 
 pub mod config;
@@ -126,8 +132,29 @@ impl TranslatorSv2 {
                 authority_pubkey: u.authority_pubkey,
                 tried_or_flagged: false,
                 user_identity: u.user_identity.clone(),
+                #[cfg(feature = "iroh-transport")]
+                iroh_node_id: u.iroh_node_id.clone(),
+                #[cfg(feature = "iroh-transport")]
+                iroh_relay_url: u.iroh_relay_url.clone(),
+                #[cfg(feature = "iroh-transport")]
+                prefer_transport: u.prefer_transport,
             })
             .collect::<Vec<_>>();
+
+        // Build the shared outbound dialer once. With `iroh-transport` off this
+        // is a thin TCP-only wrapper; with the feature on and an `[iroh]`
+        // section configured, it also owns an iroh `Endpoint` that all
+        // upstream dials reuse.
+        let connector: Arc<dyn Sv2Connector<Message> + Send + Sync> =
+            match build_connector(&self.config).await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Failed to build outbound connector: {e:?}");
+                    self.shutdown_notify.notify_waiters();
+                    self.is_alive.store(false, Ordering::Relaxed);
+                    return;
+                }
+            };
 
         let downstream_addr: SocketAddr = SocketAddr::new(
             self.config.downstream_address.parse().unwrap(),
@@ -159,6 +186,7 @@ impl TranslatorSv2 {
         if let Err(e) = self
             .initialize_upstream(
                 &mut upstream_addresses,
+                connector.clone(),
                 channel_manager_to_upstream_receiver.clone(),
                 upstream_to_channel_manager_sender.clone(),
                 cancellation_token.clone(),
@@ -252,6 +280,7 @@ impl TranslatorSv2 {
 
                                 if let Err(e) = self.initialize_upstream(
                                     &mut upstream_addresses,
+                                    connector.clone(),
                                     channel_manager_to_upstream_receiver,
                                     upstream_to_channel_manager_sender,
                                     cancellation_token.clone(),
@@ -437,6 +466,7 @@ impl TranslatorSv2 {
     pub async fn initialize_upstream(
         &self,
         upstreams: &mut [UpstreamEntry],
+        connector: Arc<dyn Sv2Connector<Message> + Send + Sync>,
         channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
         upstream_to_channel_manager_sender: Sender<Sv2Frame>,
         cancellation_token: CancellationToken,
@@ -471,6 +501,7 @@ impl TranslatorSv2 {
 
                 match try_initialize_upstream(
                     upstream_entry,
+                    connector.clone(),
                     upstream_to_channel_manager_sender.clone(),
                     channel_manager_to_upstream_receiver.clone(),
                     cancellation_token.clone(),
@@ -531,6 +562,7 @@ impl TranslatorSv2 {
 #[cfg_attr(not(test), hotpath::measure)]
 async fn try_initialize_upstream(
     upstream_addr: &UpstreamEntry,
+    connector: Arc<dyn Sv2Connector<Message> + Send + Sync>,
     upstream_to_channel_manager_sender: Sender<Sv2Frame>,
     channel_manager_to_upstream_receiver: Receiver<Sv2Frame>,
     cancellation_token: CancellationToken,
@@ -540,6 +572,7 @@ async fn try_initialize_upstream(
 ) -> Result<(), TproxyErrorKind> {
     let upstream = Upstream::new(
         upstream_addr,
+        connector,
         upstream_to_channel_manager_sender,
         channel_manager_to_upstream_receiver,
         cancellation_token.clone(),
@@ -553,6 +586,56 @@ async fn try_initialize_upstream(
         .start(cancellation_token, fallback_coordinator, task_manager)
         .await?;
     Ok(())
+}
+
+/// Build the translator's outbound dialer.
+///
+/// With `iroh-transport` off this is always a TCP-only
+/// [`CompositeSv2Connector::tcp_only`]. With the feature on, if the
+/// translator's `[iroh]` config block is present we additionally build an
+/// iroh [`Endpoint`](iroh::Endpoint) and wrap it in an [`IrohSv2Connector`]
+/// (registered with [`SV2_POOL_ALPN`] because the translator dials pools).
+async fn build_connector(
+    config: &TranslatorConfig,
+) -> Result<Arc<dyn Sv2Connector<Message> + Send + Sync>, TproxyErrorKind> {
+    #[cfg(feature = "iroh-transport")]
+    {
+        if let Some(iroh_cfg) = config.iroh() {
+            info!("[iroh-transport] resolving translator iroh connector config");
+            let mut resolved = iroh_cfg.resolve().map_err(|e| {
+                error!(error = ?e, "Failed to resolve translator iroh config: {e}");
+                TproxyErrorKind::CouldNotInitiateSystem
+            })?;
+
+            // Translator dials a pool — register SV2_POOL_ALPN so the
+            // QUIC handshake matches what the pool's listener accepts.
+            resolved.endpoint_config.alpns = vec![SV2_POOL_ALPN.to_vec()];
+
+            let endpoint = build_endpoint(&resolved.endpoint_config).await.map_err(|e| {
+                error!(error = ?e, "Failed to build iroh endpoint: {e}");
+                TproxyErrorKind::CouldNotInitiateSystem
+            })?;
+
+            info!(
+                listen_address = %resolved.endpoint_config.listen_address,
+                "[iroh-transport] translator iroh endpoint bound for outbound dials"
+            );
+
+            let iroh_connector = IrohSv2Connector::new(
+                endpoint,
+                resolved.connection_overrides,
+                SV2_POOL_ALPN,
+                resolved.per_request_timeout,
+            );
+
+            return Ok(Arc::new(CompositeSv2Connector::new(iroh_connector)));
+        }
+    }
+
+    // No iroh config (or feature disabled) — TCP-only composite. We still
+    // route through `CompositeSv2Connector` so the dial site is uniform.
+    let _ = config;
+    Ok(Arc::new(CompositeSv2Connector::tcp_only()))
 }
 
 impl Drop for TranslatorSv2 {

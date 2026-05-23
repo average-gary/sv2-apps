@@ -10,7 +10,10 @@ use std::{net::SocketAddr, sync::Arc};
 use stratum_apps::{
     channel_utils::ReceiverCleanup,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::{self, connect_with_noise, resolve_host, TCP_CONNECT_TIMEOUT},
+    network_helpers::{
+        self, resolve_host,
+        transport::{Sv2Connector, Sv2Target},
+    },
     stratum_core::{
         binary_sv2::Seq064K,
         common_messages_sv2::{Protocol, SetupConnection},
@@ -25,9 +28,14 @@ use stratum_apps::{
     },
 };
 
-use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+/// Type-erased outbound dialer used by `Upstream::new`. Built once at
+/// translator startup (TCP-only, or TCP+iroh when `[iroh]` is configured)
+/// and shared across all upstream dial attempts and fallback rebinds.
+pub type SharedSv2Connector =
+    Arc<dyn Sv2Connector<Message> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 struct UpstreamIo {
@@ -169,6 +177,7 @@ impl Upstream {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         upstream: &UpstreamEntry,
+        connector: SharedSv2Connector,
         channel_manager_sender: Sender<Sv2Frame>,
         channel_manager_receiver: Receiver<Sv2Frame>,
         cancellation_token: CancellationToken,
@@ -188,6 +197,11 @@ impl Upstream {
             ));
         }
 
+        // Resolve the TCP leg's address up front so the post-connect
+        // bookkeeping (used for SetupConnection's `endpoint_host`/`endpoint_port`
+        // and log messages) keeps using a real `SocketAddr`. The connector
+        // separately re-resolves as needed, so an iroh-only path never
+        // touches DNS here.
         let resolved_addr = resolve_host(&upstream.host, upstream.port)
             .await
             .map_err(|e| {
@@ -198,74 +212,110 @@ impl Upstream {
                 TproxyError::fallback(TproxyErrorKind::NetworkHelpersError(e.into()))
             })?;
 
-        match tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(resolved_addr))
-            .await
-            .map_err(TproxyError::fallback)?
-        {
-            Ok(socket) => {
-                info!("Connected to upstream at {}", resolved_addr);
+        // Build the per-peer Sv2Target. With the `iroh-transport` feature off
+        // this collapses to `Sv2Target::Tcp` regardless of any iroh fields on
+        // the entry — preserving TCP-only behavior for legacy deployments.
+        let target = Self::build_target_for_entry(upstream, resolved_addr).await?;
 
-                tokio::select! {
-                    biased;
-                    _ = cancellation_token.cancelled() => {
-                        info!("Shutdown received during handshake, dropping connection");
-                        Err(TproxyError::shutdown(TproxyErrorKind::CouldNotInitiateSystem))
-                    }
-                    result = connect_with_noise(socket, Some(upstream.authority_pubkey)) => {
-                        match result {
-                            Ok(stream) => {
-                                let (reader, writer) = stream.into_split();
-
-                                let (outbound_tx, outbound_rx) = unbounded();
-                                let (inbound_tx, inbound_rx) = unbounded();
-
-                                spawn_io_tasks(
-                                    task_manager,
-                                    reader,
-                                    writer,
-                                    outbound_rx,
-                                    inbound_tx,
-                                    cancellation_token.clone(),
-                                    fallback_coordinator.clone(),
-                                );
-
-                                let upstream_io = UpstreamIo::new(
-                                    inbound_rx,
-                                    outbound_tx,
-                                    channel_manager_sender,
-                                    channel_manager_receiver,
-                                );
-                                debug!(
-                                    "Successfully initialized upstream channel with {}",
-                                    resolved_addr
-                                );
-
-                                Ok(Self {
-                                    upstream_io,
-                                    required_extensions: required_extensions.clone(),
-                                    address: resolved_addr,
-                                })
-                            }
-                            Err(network_helpers::Error::InvalidKey) => {
-                                Err(TproxyError::fallback(TproxyErrorKind::InvalidKey))
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed Noise handshake with {}: {e}.",
-                                    resolved_addr
-                                );
-                                Err(TproxyError::fallback(
-                                    TproxyErrorKind::NetworkHelpersError(e),
-                                ))
-                            }
-                        }
-                    }
+        let conn_pair = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => {
+                info!("Shutdown received during handshake, dropping connection");
+                return Err(TproxyError::shutdown(
+                    TproxyErrorKind::CouldNotInitiateSystem,
+                ));
+            }
+            result = connector.connect(&target) => match result {
+                Ok(pair) => {
+                    info!("Connected to upstream at {}", resolved_addr);
+                    pair
+                }
+                Err(network_helpers::Error::InvalidKey) => {
+                    return Err(TproxyError::fallback(TproxyErrorKind::InvalidKey));
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to dial / handshake with upstream {}: {e}.",
+                        resolved_addr
+                    );
+                    return Err(TproxyError::fallback(
+                        TproxyErrorKind::NetworkHelpersError(e),
+                    ));
                 }
             }
-            Err(e) => {
-                error!("Failed to connect to {}: {e}.", resolved_addr);
-                Err(TproxyError::fallback(e))
-            }
+        };
+
+        let (outbound_tx, outbound_rx) = unbounded();
+        let (inbound_tx, inbound_rx) = unbounded();
+
+        spawn_io_tasks(
+            task_manager,
+            conn_pair,
+            outbound_rx,
+            inbound_tx,
+            cancellation_token.clone(),
+            fallback_coordinator.clone(),
+        );
+
+        let upstream_io = UpstreamIo::new(
+            inbound_rx,
+            outbound_tx,
+            channel_manager_sender,
+            channel_manager_receiver,
+        );
+        debug!(
+            "Successfully initialized upstream channel with {}",
+            resolved_addr
+        );
+
+        Ok(Self {
+            upstream_io,
+            required_extensions: required_extensions.clone(),
+            address: resolved_addr,
+        })
+    }
+
+    /// Build the [`Sv2Target`] for a single upstream entry. With the
+    /// `iroh-transport` feature off the entry's iroh fields are ignored and
+    /// the returned target is always [`Sv2Target::Tcp`].
+    async fn build_target_for_entry(
+        upstream: &UpstreamEntry,
+        _resolved_addr: SocketAddr,
+    ) -> TproxyResult<Sv2Target, error::Upstream> {
+        #[cfg(feature = "iroh-transport")]
+        {
+            stratum_apps::network_helpers::transport::build_target(
+                &upstream.host,
+                upstream.port,
+                Some(upstream.authority_pubkey),
+                upstream.iroh_node_id.as_deref(),
+                upstream.iroh_relay_url.as_deref(),
+                upstream.prefer_transport,
+            )
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to build Sv2Target for upstream {}:{}: {e}",
+                    upstream.host, upstream.port
+                );
+                TproxyError::fallback(TproxyErrorKind::NetworkHelpersError(e))
+            })
+        }
+        #[cfg(not(feature = "iroh-transport"))]
+        {
+            stratum_apps::network_helpers::transport::build_target(
+                &upstream.host,
+                upstream.port,
+                Some(upstream.authority_pubkey),
+            )
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to build Sv2Target for upstream {}:{}: {e}",
+                    upstream.host, upstream.port
+                );
+                TproxyError::fallback(TproxyErrorKind::NetworkHelpersError(e))
+            })
         }
     }
 

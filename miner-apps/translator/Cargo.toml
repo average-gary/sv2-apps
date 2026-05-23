@@ -22,6 +22,7 @@ path = "src/main.rs"
 [dependencies]
 stratum-apps = { version = "0.6.0", path = "../../stratum-apps", features = ["translator"] }
 async-channel = "1.5.1"
+async-trait = { version = "0.1", optional = true }
 serde = { version = "1.0.89", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0.64", default-features = false, features = ["alloc"] }
 tokio = { version = "1.44.1", features = ["full"] }
@@ -38,6 +39,7 @@ default = ["monitoring"]
 monitoring = ["stratum-apps/asic-rs-telemetry"]
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
+iroh-transport = ["stratum-apps/iroh-transport", "dep:async-trait"]
 
 
 [dev-dependencies]

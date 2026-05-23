@@ -175,6 +175,18 @@ pub struct UpstreamEntry {
     pub authority_pubkey: Secp256k1PublicKey,
     pub tried_or_flagged: bool,
     pub user_identity: String,
+    /// Optional iroh NodeId of this upstream (base32 lowercase). Only
+    /// honored when the `iroh-transport` feature is enabled and the
+    /// translator's top-level `[iroh]` config is present.
+    #[cfg(feature = "iroh-transport")]
+    pub iroh_node_id: Option<String>,
+    /// Optional iroh relay URL hint for this upstream. Empty string is
+    /// treated the same as `None`.
+    #[cfg(feature = "iroh-transport")]
+    pub iroh_relay_url: Option<String>,
+    /// Per-peer transport preference. Defaults to `IrohThenTcp`.
+    #[cfg(feature = "iroh-transport")]
+    pub prefer_transport: stratum_apps::network_helpers::transport::PreferTransport,
 }
 
 /// Defines the operational mode for Translator Proxy.
