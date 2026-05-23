@@ -15,7 +15,9 @@ use stratum_apps::{
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
-    network_helpers::accept_noise_connection,
+    network_helpers::transport::{Sv2Listener, TcpSv2Listener},
+    // ConnPair and PeerIdentity are only used by the dual-listener fan-in
+    // implementation under #[cfg(feature = "iroh-transport")] below.
     stratum_core::{
         bitcoin::{consensus, Amount, Target, TxOut},
         channels_sv2::{
@@ -42,13 +44,22 @@ use stratum_apps::{
     utils::{
         protocol_message_type::{protocol_message_type, MessageType},
         types::{
-            ChannelId, DownstreamId, RequestId, SharesBatchSize, SharesPerMinute, Sv2Frame,
-            TemplateId, UpstreamJobId, VardiffKey,
+            ChannelId, DownstreamId, Message, RequestId, SharesBatchSize, SharesPerMinute,
+            Sv2Frame, TemplateId, UpstreamJobId, VardiffKey,
         },
     },
 };
-use tokio::{net::TcpListener, select};
+use tokio::select;
 use tracing::{debug, error, info, warn};
+
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::{
+    iroh::{
+        alpn::SV2_JDC_ALPN, endpoint::build_endpoint, listener::IrohSv2Listener, IrohRoleConfig,
+    },
+    transport::{ConnPair, PeerIdentity},
+    Error as TransportError,
+};
 
 use crate::{
     channel_manager::downstream_message_handler::RouteMessageTo,
@@ -68,6 +79,162 @@ mod extensions_message_handler;
 mod jd_message_handler;
 mod template_message_handler;
 mod upstream_message_handler;
+
+/// Type-erased downstream listener (TCP, iroh, or a Dual fan-in of both).
+///
+/// The accept loop in [`ChannelManager::start_downstream_server`] consumes
+/// this trait object. Pre-iroh-transport this slot was a hard-coded
+/// [`tokio::net::TcpListener`].
+type DownstreamListener =
+    Box<dyn Sv2Listener<Message> + Send + Sync>;
+
+/// Build the JDC's downstream listener.
+///
+/// Always binds [`TcpSv2Listener`]. When `iroh_config` is `Some` and the
+/// `iroh-transport` feature is enabled, also builds an
+/// [`IrohSv2Listener`] and composes them into a [`DualSv2Listener`] that
+/// fans both accept tasks into a single channel — downstream callers see
+/// one [`Sv2Listener::accept`] surface and cannot tell which transport
+/// produced a given connection.
+///
+/// Exposed (privately to the channel_manager module) so the JDC's fallback
+/// coordinator can rebind on fallback by calling
+/// [`ChannelManager::start_downstream_server`] again — the same code path
+/// runs on initial bind and on every rebind.
+async fn build_listener(
+    listening_address: SocketAddr,
+    auth_pub: Secp256k1PublicKey,
+    auth_priv: Secp256k1SecretKey,
+    cert_validity_sec: u64,
+    #[cfg(feature = "iroh-transport")] iroh_config: Option<&IrohRoleConfig>,
+) -> JDCResult<DownstreamListener, error::ChannelManager> {
+    let tcp = TcpSv2Listener::bind(listening_address, auth_pub, auth_priv, cert_validity_sec)
+        .await
+        .map_err(|e| {
+            error!(error = ?e, "Failed to bind TCP downstream listener at {listening_address}");
+            JDCError::shutdown(e)
+        })?;
+
+    #[cfg(feature = "iroh-transport")]
+    {
+        if let Some(cfg) = iroh_config {
+            info!("[iroh-transport] resolving JDC iroh listener config");
+            let mut resolved = cfg.resolve().map_err(|e| {
+                error!(error = ?e, "Failed to resolve JDC iroh config: {e}");
+                JDCError::<error::ChannelManager>::shutdown(JDCErrorKind::CouldNotInitiateSystem)
+            })?;
+
+            // The role-specific call site fills in the ALPN — see
+            // ResolvedIrohRoleConfig docs.
+            resolved.endpoint_config.alpns = vec![SV2_JDC_ALPN.to_vec()];
+
+            let endpoint =
+                build_endpoint(&resolved.endpoint_config).await.map_err(|e| {
+                    error!(error = ?e, "Failed to build iroh endpoint: {e}");
+                    JDCError::<error::ChannelManager>::shutdown(JDCErrorKind::CouldNotInitiateSystem)
+                })?;
+
+            info!(
+                listen_address = %resolved.endpoint_config.listen_address,
+                "[iroh-transport] JDC iroh listener bound"
+            );
+
+            let iroh_listener: Box<dyn Sv2Listener<Message> + Send + Sync> =
+                Box::new(IrohSv2Listener::new(
+                    endpoint,
+                    resolved.admission,
+                    auth_pub,
+                    auth_priv,
+                    cert_validity_sec,
+                    SV2_JDC_ALPN,
+                    resolved.per_request_timeout,
+                ));
+            let tcp_listener: Box<dyn Sv2Listener<Message> + Send + Sync> = Box::new(tcp);
+
+            return Ok(Box::new(DualSv2Listener::new(tcp_listener, iroh_listener)));
+        }
+    }
+
+    Ok(Box::new(tcp))
+}
+
+/// One element of the [`DualSv2Listener`] fan-in channel.
+#[cfg(feature = "iroh-transport")]
+type DualAcceptResult = Result<(PeerIdentity, ConnPair<Message>), TransportError>;
+
+/// Fan-in of two [`Sv2Listener`]s. Each inner listener runs its own accept
+/// task that pushes successfully-handshaken connections into a shared
+/// channel; [`DualSv2Listener::accept`] reads the next available
+/// connection from that channel. Errors on the inner listeners are logged
+/// (not surfaced) so a transient failure on one transport does not stall
+/// the other.
+#[cfg(feature = "iroh-transport")]
+struct DualSv2Listener {
+    rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<DualAcceptResult>>,
+}
+
+#[cfg(feature = "iroh-transport")]
+impl DualSv2Listener {
+    fn new(
+        tcp: Box<dyn Sv2Listener<Message> + Send + Sync>,
+        iroh: Box<dyn Sv2Listener<Message> + Send + Sync>,
+    ) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+        let tx_tcp = tx.clone();
+        tokio::spawn(async move {
+            loop {
+                let res = tcp.accept().await;
+                let send = match res {
+                    Ok(pair) => tx_tcp.send(Ok(pair)).await,
+                    Err(e) => {
+                        warn!(error = ?e, "TCP listener accept error");
+                        tx_tcp.send(Err(e)).await
+                    }
+                };
+                if send.is_err() {
+                    debug!("DualSv2Listener: TCP fan-in receiver closed");
+                    break;
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            loop {
+                let res = iroh.accept().await;
+                let send = match res {
+                    Ok(pair) => tx.send(Ok(pair)).await,
+                    Err(e) => {
+                        warn!(error = ?e, "iroh listener accept error");
+                        tx.send(Err(e)).await
+                    }
+                };
+                if send.is_err() {
+                    debug!("DualSv2Listener: iroh fan-in receiver closed");
+                    break;
+                }
+            }
+        });
+
+        Self {
+            rx: tokio::sync::Mutex::new(rx),
+        }
+    }
+}
+
+#[cfg(feature = "iroh-transport")]
+#[async_trait::async_trait]
+impl Sv2Listener<Message> for DualSv2Listener {
+    async fn accept(
+        &self,
+    ) -> Result<(PeerIdentity, ConnPair<Message>), TransportError> {
+        let mut rx = self.rx.lock().await;
+        match rx.recv().await {
+            Some(res) => res,
+            None => Err(TransportError::SocketClosed),
+        }
+    }
+}
 
 // ============================================================================
 // JDC extranonce layout
@@ -524,6 +691,15 @@ impl ChannelManager {
     }
 
     /// Starts the downstream server, and accepts new connection request.
+    ///
+    /// When `iroh_config` is `Some`, JDC additionally binds an iroh
+    /// [`Endpoint`](iroh::Endpoint) and accepts SV2 connections from either
+    /// transport (a "Dual" listener that fans both accept tasks into a single
+    /// channel). When `None`, JDC binds TCP only.
+    ///
+    /// `iroh_config` is feature-gated on `iroh-transport`; the parameter is
+    /// elided when the feature is disabled so callers don't need their own
+    /// `cfg` walls.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_downstream_server(
         self,
@@ -537,6 +713,7 @@ impl ChannelManager {
         channel_manager_sender: Sender<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
+        #[cfg(feature = "iroh-transport")] iroh_config: Option<IrohRoleConfig>,
     ) -> JDCResult<(), error::ChannelManager> {
         // todo: let start downstream accept channel manager as `Arc`, instead of clone
         let this = Arc::new(self);
@@ -569,10 +746,15 @@ impl ChannelManager {
         }
 
         info!("Starting downstream server at {listening_address}");
-        let server = TcpListener::bind(listening_address).await.map_err(|e| {
-            error!(error = ?e, "Failed to bind downstream server at {listening_address}");
-            JDCError::shutdown(e)
-        })?;
+        let listener = build_listener(
+            listening_address,
+            authority_public_key,
+            authority_secret_key,
+            cert_validity_sec,
+            #[cfg(feature = "iroh-transport")]
+            iroh_config.as_ref(),
+        )
+        .await?;
 
         let task_manager_clone = task_manager.clone();
         // Register the listener task in fallback coordination, so fallback waits
@@ -589,10 +771,10 @@ impl ChannelManager {
                         info!("Downstream Server: received fallback signal");
                         break;
                     }
-                    res = server.accept() => {
+                    res = listener.accept() => {
                         match res {
-                            Ok((stream, socket_address)) => {
-                                info!(%socket_address, "New downstream connection");
+                            Ok((peer_id, conn_pair)) => {
+                                info!(?peer_id, "New downstream connection");
 
                                 let this = Arc::clone(&this);
                                 let cancellation_token_inner = cancellation_token.clone();
@@ -603,23 +785,6 @@ impl ChannelManager {
                                 let required_extensions_inner = required_extensions.clone();
 
                                 task_manager_clone.spawn(async move {
-                                    let noise_stream = tokio::select! {
-                                        biased;
-                                        _ = cancellation_token_inner.cancelled() => {
-                                            info!("Shutdown received during handshake, dropping connection");
-                                            return;
-                                        }
-                                        result = accept_noise_connection(stream, authority_public_key, authority_secret_key, cert_validity_sec) => {
-                                            match result {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    error!(error = ?e, "Noise handshake failed");
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    };
-
                                     let downstream_id = this.channel_manager_data
                                         .super_safe_lock(|data| data.downstream_id_factory.fetch_add(1, Ordering::Relaxed));
 
@@ -643,7 +808,7 @@ impl ChannelManager {
                                         group_channel,
                                         channel_manager_sender_inner,
                                         channel_manager_receiver_downstream,
-                                        noise_stream,
+                                        conn_pair,
                                         cancellation_token_inner.clone(),
                                         fallback_coordinator_inner.clone(),
                                         task_manager_inner.clone(),

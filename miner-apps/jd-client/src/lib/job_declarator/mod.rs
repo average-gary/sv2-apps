@@ -5,7 +5,7 @@ use stratum_apps::{
     bitcoin_core_sv2::common::template_distribution_protocol::CancellationToken,
     channel_utils::ReceiverCleanup,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::{connect_with_noise, resolve_host, TCP_CONNECT_TIMEOUT},
+    network_helpers::resolve_host,
     stratum_core::{
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,
@@ -17,15 +17,17 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl},
-    io_task::spawn_io_tasks,
     jd_mode::JDMode,
+    transport::{spawn_conn_pair_io_tasks, JdcConnectors},
     utils::{get_setup_connection_message_jds, UpstreamEntry},
 };
+
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::transport::Sv2Target;
 
 mod message_handler;
 
@@ -118,12 +120,17 @@ impl JobDeclarator {
         }
     }
 
-    /// Creates a new JobDeclarator instance by connecting and performing a Noise handshake.
+    /// Creates a new JobDeclarator instance by dialing and performing a Noise handshake.
     ///
-    /// - Resolves hostname to IP address via DNS (if not already an IP)
-    /// - Establishes TCP connection.
-    /// - Performs SV2 Noise handshake.
-    /// - Spawns background IO tasks for reading/writing frames.
+    /// - Resolves hostname to IP address via DNS (if not already an IP).
+    /// - Dials JDS via the transport-agnostic [`JdcConnectors`]; with the
+    ///   `iroh-transport` feature on and per-upstream iroh fields set, the
+    ///   dial can prefer iroh and fall back to TCP per `prefer_transport`.
+    ///   Plan §"Phase 4 — Client-side fallback + remaining roles" / PR 4b.
+    /// - Spawns bridge IO tasks to wire the resulting [`ConnPair`] into the
+    ///   existing `Sv2Frame` channels consumed by the rest of the JDC
+    ///   pipeline.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         upstream_entry: &UpstreamEntry,
         channel_manager_sender: Sender<JobDeclaration<'static>>,
@@ -132,6 +139,7 @@ impl JobDeclarator {
         fallback_coordinator: FallbackCoordinator,
         mode: JDMode,
         task_manager: Arc<TaskManager>,
+        connectors: JdcConnectors,
     ) -> JDCResult<Self, error::JobDeclarator> {
         let addr = resolve_host(&upstream_entry.jds_host, upstream_entry.jds_port)
             .await
@@ -144,30 +152,27 @@ impl JobDeclarator {
             })?;
 
         info!("Connecting to JD Server at {addr}");
-        let stream = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
-            .await
-            .map_err(JDCError::fallback)?
-            .map_err(JDCError::fallback)?;
-        info!("Connection established with JD Server at {addr} in mode: {mode:?}");
+        let target = build_jds_target(addr, upstream_entry);
 
-        let (noise_stream_reader, noise_stream_writer) = tokio::select! {
+        let conn_pair = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
-                info!("Shutdown received during handshake, dropping connection");
+                info!("Shutdown received during dial, dropping connection");
                 return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
             }
-            result = connect_with_noise(stream, Some(upstream_entry.authority_pubkey)) => {
-                result.map_err(JDCError::fallback)?.into_split()
+            result = connectors.connect_jds::<Message>(&target) => {
+                result.map_err(JDCError::fallback)?
             }
         };
+
+        info!("Connection established with JD Server at {addr} in mode: {mode:?}");
 
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
-        spawn_io_tasks(
+        spawn_conn_pair_io_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            conn_pair,
             outbound_rx,
             inbound_tx,
             cancellation_token,
@@ -383,5 +388,31 @@ impl JobDeclarator {
         }
 
         Ok(())
+    }
+}
+
+/// Build the [`Sv2Target`] for the JDC→JDS dial. With `iroh-transport`
+/// disabled, always a `Sv2Target::Tcp`. With it enabled, returns the right
+/// combined variant per the upstream entry's `prefer_transport` and iroh
+/// fields.
+#[cfg(feature = "iroh-transport")]
+fn build_jds_target(addr: SocketAddr, upstream_entry: &UpstreamEntry) -> Sv2Target {
+    crate::transport::build_jds_target(
+        addr,
+        upstream_entry.authority_pubkey,
+        upstream_entry.iroh_jds_node_id.as_deref(),
+        upstream_entry.iroh_relay_url.as_deref(),
+        upstream_entry.prefer_transport,
+    )
+}
+
+#[cfg(not(feature = "iroh-transport"))]
+fn build_jds_target(
+    addr: SocketAddr,
+    upstream_entry: &UpstreamEntry,
+) -> stratum_apps::network_helpers::transport::Sv2Target {
+    stratum_apps::network_helpers::transport::Sv2Target::Tcp {
+        addr,
+        authority_pubkey: Some(upstream_entry.authority_pubkey),
     }
 }

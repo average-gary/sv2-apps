@@ -16,7 +16,7 @@ use stratum_apps::{
     bitcoin_core_sv2::common::template_distribution_protocol::CancellationToken,
     channel_utils::ReceiverCleanup,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::{connect_with_noise, resolve_host, TCP_CONNECT_TIMEOUT},
+    network_helpers::resolve_host,
     stratum_core::{
         binary_sv2::Seq064K, extensions_sv2::RequestExtensions, framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync, parsers_sv2::AnyMessage,
@@ -27,14 +27,16 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl},
-    io_task::spawn_io_tasks,
+    transport::{spawn_conn_pair_io_tasks, JdcConnectors},
     utils::{get_setup_connection_message, UpstreamEntry},
 };
+
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::transport::Sv2Target;
 
 mod message_handler;
 
@@ -134,8 +136,15 @@ impl Upstream {
     /// Create a new [`Upstream`] connection to the given address.
     ///
     /// - Resolves hostname to IP address via DNS (if not already an IP)
-    /// - Establishes TCP + Noise connection
-    /// - Spawns IO tasks to handle inbound/outbound traffic
+    /// - Dials the upstream via the transport-agnostic [`JdcConnectors`].
+    ///   When iroh is configured for this upstream and the
+    ///   `iroh-transport` feature is enabled, this can prefer iroh and fall
+    ///   back to TCP per the per-upstream `prefer_transport`. Plan §"Phase
+    ///   4 — Client-side fallback + remaining roles" / PR 4b.
+    /// - Spawns bridge IO tasks to wire the resulting [`ConnPair`] into the
+    ///   existing `Sv2Frame` channels consumed by the rest of the JDC
+    ///   pipeline.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         upstream_entry: &UpstreamEntry,
         channel_manager_sender: Sender<Sv2Frame>,
@@ -144,6 +153,7 @@ impl Upstream {
         fallback_coordinator: FallbackCoordinator,
         task_manager: Arc<TaskManager>,
         required_extensions: Vec<u16>,
+        connectors: JdcConnectors,
     ) -> JDCResult<Self, error::Upstream> {
         let addr = resolve_host(&upstream_entry.pool_host, upstream_entry.pool_port)
             .await
@@ -155,41 +165,37 @@ impl Upstream {
                 JDCError::fallback(JDCErrorKind::NetworkHelpersError(e.into()))
             })?;
 
-        let stream = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
-            .await
-            .map_err(JDCError::fallback)?
-            .map_err(JDCError::fallback)?;
-        info!("Connected to upstream at {}", addr);
-        debug!("Begin with noise setup in upstream connection");
+        info!("Connecting to upstream pool at {}", addr);
+        debug!("Building transport target for upstream connection");
 
-        let (noise_stream_reader, noise_stream_writer) = tokio::select! {
+        let target = build_pool_target(addr, upstream_entry);
+
+        let conn_pair = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
-                info!("Shutdown received during handshake, dropping connection");
-                Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem))
+                info!("Shutdown received during dial, dropping connection");
+                return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
             }
-            result = connect_with_noise(stream, Some(upstream_entry.authority_pubkey)) => {
-                match result {
-                    Ok(noise_stream) => Ok(noise_stream.into_split()),
-                    Err(e) => Err(JDCError::fallback(e))
-                }
+            result = connectors.connect_pool::<Message>(&target) => {
+                result.map_err(JDCError::fallback)?
             }
-        }?;
+        };
+
+        info!("Upstream dial succeeded; connection established at {addr}");
 
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
-        spawn_io_tasks(
+        spawn_conn_pair_io_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            conn_pair,
             outbound_rx,
             inbound_tx,
             cancellation_token.clone(),
             Some(fallback_coordinator.clone()),
         );
 
-        debug!("Noise setup done in upstream connection");
+        debug!("Bridge IO tasks spawned for upstream connection");
         let upstream_io = UpstreamIo {
             channel_manager_receiver,
             channel_manager_sender,
@@ -458,5 +464,31 @@ impl Upstream {
             }
         }
         Ok(())
+    }
+}
+
+/// Build the [`Sv2Target`] for the JDC→Pool dial. With `iroh-transport`
+/// disabled, always a `Sv2Target::Tcp`. With it enabled and the upstream
+/// configured for iroh, returns the appropriate combined variant per
+/// `prefer_transport`.
+#[cfg(feature = "iroh-transport")]
+fn build_pool_target(addr: SocketAddr, upstream_entry: &UpstreamEntry) -> Sv2Target {
+    crate::transport::build_pool_target(
+        addr,
+        upstream_entry.authority_pubkey,
+        upstream_entry.iroh_pool_node_id.as_deref(),
+        upstream_entry.iroh_relay_url.as_deref(),
+        upstream_entry.prefer_transport,
+    )
+}
+
+#[cfg(not(feature = "iroh-transport"))]
+fn build_pool_target(
+    addr: SocketAddr,
+    upstream_entry: &UpstreamEntry,
+) -> stratum_apps::network_helpers::transport::Sv2Target {
+    stratum_apps::network_helpers::transport::Sv2Target::Tcp {
+        addr,
+        authority_pubkey: Some(upstream_entry.authority_pubkey),
     }
 }

@@ -63,6 +63,26 @@ pub struct JobDeclaratorClientConfig {
     /// downstreams may request more.
     #[serde(default = "default_reserved_downstream_rollable_extranonce_size")]
     reserved_downstream_rollable_extranonce_size: u8,
+    /// Optional iroh transport configuration for the JDC's downstream listener
+    /// (proxies / miners connect here). When `Some`, JDC binds an iroh
+    /// endpoint alongside the TCP listener and accepts SV2 connections from
+    /// either transport. When `None` (default), JDC speaks TCP only.
+    ///
+    /// See `[iroh]` block documentation in
+    /// `stratum_apps::network_helpers::iroh::IrohRoleConfig`.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh: Option<stratum_apps::network_helpers::iroh::IrohRoleConfig>,
+
+    /// Optional iroh fields for the JDC→TP outbound dial. When `None` (or
+    /// when the active `template_provider_type` is not `Sv2Tp`), JDC dials
+    /// the TP over TCP only.
+    ///
+    /// Kept as a sibling field of `template_provider_type` to avoid editing
+    /// the shared `stratum_apps::tp_type::TemplateProviderType` enum.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub template_provider_iroh: Option<TemplateProviderIrohConfig>,
 }
 
 /// Default value used by
@@ -115,6 +135,10 @@ impl JobDeclaratorClientConfig {
             reserved_downstream_rollable_extranonce_size:
                 reserved_downstream_rollable_extranonce_size
                     .unwrap_or(DEFAULT_RESERVED_DOWNSTREAM_ROLLABLE_EXTRANONCE_SIZE),
+            #[cfg(feature = "iroh-transport")]
+            iroh: None,
+            #[cfg(feature = "iroh-transport")]
+            template_provider_iroh: None,
         }
     }
 
@@ -214,6 +238,19 @@ impl JobDeclaratorClientConfig {
     pub fn reserved_downstream_rollable_extranonce_size(&self) -> u8 {
         self.reserved_downstream_rollable_extranonce_size
     }
+
+    /// Returns the optional iroh transport configuration for the JDC's
+    /// downstream listener.
+    #[cfg(feature = "iroh-transport")]
+    pub fn iroh(&self) -> Option<&stratum_apps::network_helpers::iroh::IrohRoleConfig> {
+        self.iroh.as_ref()
+    }
+
+    /// Returns the optional iroh configuration for the JDC→TP outbound dial.
+    #[cfg(feature = "iroh-transport")]
+    pub fn template_provider_iroh(&self) -> Option<&TemplateProviderIrohConfig> {
+        self.template_provider_iroh.as_ref()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq)]
@@ -301,6 +338,37 @@ pub struct Upstream {
     pub jds_address: String,
     pub jds_port: u16,
     pub user_identity: String,
+
+    /// Optional iroh `NodeId` (base32 lowercase) of the upstream pool's iroh
+    /// listener (`sv2/pool/0`). Required for iroh dialing JDC→Pool. When
+    /// `None`, JDC dials this pool over TCP only regardless of
+    /// `prefer_transport`.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh_pool_node_id: Option<String>,
+
+    /// Optional iroh `NodeId` (base32 lowercase) of the upstream JDS's iroh
+    /// listener (`sv2/jds/0`). Required for iroh dialing JDC→JDS. When
+    /// `None`, JDC dials this JDS over TCP only regardless of
+    /// `prefer_transport`.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh_jds_node_id: Option<String>,
+
+    /// Optional iroh relay URL hint shared by both pool and JDS dials for
+    /// this upstream. Pool and JDS are usually run by the same operator on
+    /// the same relay, so a single field suffices. When `None`, dials use
+    /// only direct addresses + global discovery.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh_relay_url: Option<String>,
+
+    /// Per-upstream transport preference for both pool and JDS dials.
+    /// Defaults to [`PreferTransport::IrohThenTcp`] — try iroh first, fall
+    /// back to TCP on failure. Plan §"Client side — fallback ordering".
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub prefer_transport: PreferTransport,
 }
 
 impl Upstream {
@@ -320,8 +388,63 @@ impl Upstream {
             jds_address,
             jds_port,
             user_identity,
+            #[cfg(feature = "iroh-transport")]
+            iroh_pool_node_id: None,
+            #[cfg(feature = "iroh-transport")]
+            iroh_jds_node_id: None,
+            #[cfg(feature = "iroh-transport")]
+            iroh_relay_url: None,
+            #[cfg(feature = "iroh-transport")]
+            prefer_transport: PreferTransport::default(),
         }
     }
+}
+
+/// Per-peer fallback ordering used when both transports are configured.
+///
+/// See plan §"Client side — fallback ordering" for the dispatch matrix and
+/// the precise definition of "fail" for each leg. The values map onto the
+/// combined variants of [`stratum_apps::network_helpers::transport::Sv2Target`]
+/// at dial time.
+#[cfg(feature = "iroh-transport")]
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreferTransport {
+    /// TCP only, no fallback.
+    Tcp,
+    /// Iroh only, no fallback.
+    Iroh,
+    /// Try iroh; if the iroh leg fails before any application bytes flow,
+    /// try TCP. **Default** for the most common deployment shape (UDP
+    /// reachable, but operators want TCP as a safety net).
+    #[default]
+    IrohThenTcp,
+    /// Try TCP; if it fails, try iroh. Useful for known UDP-throttled
+    /// networks where TCP is the primary path.
+    TcpThenIroh,
+}
+
+/// Optional iroh transport configuration for the JDC→TP outbound dial.
+///
+/// Lives at the JDC config top level (alongside `template_provider_type`)
+/// rather than inside the [`stratum_apps::tp_type::TemplateProviderType`]
+/// enum so this branch's diff against `stratum-apps` stays minimal — adding
+/// fields to `TemplateProviderType` would touch a shared upstream type.
+#[cfg(feature = "iroh-transport")]
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct TemplateProviderIrohConfig {
+    /// iroh `NodeId` (base32 lowercase) of the TP's iroh listener
+    /// (`sv2/tp/0`). When `None`, JDC dials the TP over TCP only.
+    #[serde(default)]
+    pub iroh_node_id: Option<String>,
+    /// Relay URL hint for the TP dial. Falls back to the per-upstream
+    /// `iroh_relay_url` of the active upstream when unset, then to global
+    /// discovery.
+    #[serde(default)]
+    pub iroh_relay_url: Option<String>,
+    /// Per-TP transport preference.
+    #[serde(default)]
+    pub prefer_transport: PreferTransport,
 }
 
 #[cfg(test)]

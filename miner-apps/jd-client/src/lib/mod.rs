@@ -45,6 +45,7 @@ mod job_declarator;
 #[cfg(feature = "monitoring")]
 pub mod monitoring;
 mod template_receiver;
+mod transport;
 mod upstream;
 pub mod utils;
 
@@ -150,11 +151,33 @@ impl JobDeclaratorClient {
         let mut bitcoin_core_sv2_join_handle: Option<JoinHandle<()>> = None;
         let mut bitcoin_core_sv2_cancellation_token: Option<CancellationToken> = None;
 
+        // Build the outbound transport connectors once at startup. When the
+        // `iroh-transport` feature is on AND `[iroh]` is configured, this
+        // owns a single iroh `Endpoint` shared across the three role-specific
+        // connectors (pool / JDS / TP). When the feature is off or the
+        // endpoint fails to build, we degrade to TCP-only — see
+        // `JdcConnectors::build` for the details. The handle is cloned into
+        // each dial site (TP receiver, upstream::Upstream::new,
+        // job_declarator::JobDeclarator::new); cheap because each connector
+        // is wrapped in `Arc`.
+        let connectors = {
+            #[cfg(feature = "iroh-transport")]
+            {
+                crate::transport::JdcConnectors::build(self.config.iroh()).await
+            }
+            #[cfg(not(feature = "iroh-transport"))]
+            {
+                crate::transport::JdcConnectors::tcp_only()
+            }
+        };
+
         match self.config.template_provider_type().clone() {
             TemplateProviderType::Sv2Tp {
                 address,
                 public_key,
             } => {
+                #[cfg(feature = "iroh-transport")]
+                let tp_iroh_cfg = self.config.template_provider_iroh().cloned();
                 let template_receiver = match Sv2Tp::new(
                     address.clone(),
                     public_key,
@@ -162,6 +185,9 @@ impl JobDeclaratorClient {
                     tp_to_channel_manager_sender,
                     self.cancellation_token.clone(),
                     task_manager.clone(),
+                    connectors.clone(),
+                    #[cfg(feature = "iroh-transport")]
+                    tp_iroh_cfg,
                 )
                 .await
                 {
@@ -257,6 +283,14 @@ impl JobDeclaratorClient {
                 authority_pubkey: u.authority_pubkey,
                 tried_or_flagged: false,
                 user_identity: u.user_identity.clone(),
+                #[cfg(feature = "iroh-transport")]
+                iroh_pool_node_id: u.iroh_pool_node_id.clone(),
+                #[cfg(feature = "iroh-transport")]
+                iroh_jds_node_id: u.iroh_jds_node_id.clone(),
+                #[cfg(feature = "iroh-transport")]
+                iroh_relay_url: u.iroh_relay_url.clone(),
+                #[cfg(feature = "iroh-transport")]
+                prefer_transport: u.prefer_transport,
             })
             .collect();
 
@@ -298,6 +332,7 @@ impl JobDeclaratorClient {
                     fallback_coordinator.clone(),
                     mode.clone(),
                     task_manager.clone(),
+                    connectors.clone(),
                 )
                 .await
             {
@@ -352,6 +387,8 @@ impl JobDeclaratorClient {
                         downstream_to_channel_manager_sender,
                         config.supported_extensions().to_vec(),
                         config.required_extensions().to_vec(),
+                        #[cfg(feature = "iroh-transport")]
+                        config.iroh().cloned(),
                     )
                     .await
                 {
@@ -443,6 +480,7 @@ impl JobDeclaratorClient {
                             fallback_coordinator.clone(),
                             mode.clone(),
                             task_manager.clone(),
+                            connectors.clone(),
                         )
                         .await
                     {
@@ -518,6 +556,8 @@ impl JobDeclaratorClient {
                                     downstream_to_channel_manager_sender_new,
                                     config.supported_extensions().to_vec(),
                                     config.required_extensions().to_vec(),
+                                    #[cfg(feature = "iroh-transport")]
+                                    config.iroh().cloned(),
                                 )
                                 .await {
                                     tracing::error!(?e, "Downstream server task exited with error");
@@ -666,6 +706,7 @@ impl JobDeclaratorClient {
         fallback_coordinator: FallbackCoordinator,
         mode: JDMode,
         task_manager: Arc<TaskManager>,
+        connectors: crate::transport::JdcConnectors,
     ) -> Result<(Upstream, JobDeclarator, String), JDCErrorKind> {
         const MAX_RETRIES: usize = 3;
         let upstream_len = upstreams.len();
@@ -717,6 +758,7 @@ impl JobDeclaratorClient {
                     mode.clone(),
                     task_manager.clone(),
                     &self.config,
+                    connectors.clone(),
                 )
                 .await
                 {
@@ -780,6 +822,7 @@ async fn try_initialize_single(
     mode: JDMode,
     task_manager: Arc<TaskManager>,
     config: &JobDeclaratorClientConfig,
+    connectors: crate::transport::JdcConnectors,
 ) -> Result<(Upstream, JobDeclarator), JDCErrorKind> {
     info!("Upstream connection in-progress at initialize single");
     let upstream = Upstream::new(
@@ -790,6 +833,7 @@ async fn try_initialize_single(
         fallback_coordinator.clone(),
         task_manager.clone(),
         config.required_extensions().to_vec(),
+        connectors.clone(),
     )
     .await
     .map_err(|error| error.kind)?;
@@ -804,6 +848,7 @@ async fn try_initialize_single(
         fallback_coordinator,
         mode,
         task_manager.clone(),
+        connectors,
     )
     .await
     .map_err(|error| error.kind)?;

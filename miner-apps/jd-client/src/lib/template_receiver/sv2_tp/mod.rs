@@ -17,7 +17,7 @@ use stratum_apps::{
     bitcoin_core_sv2::common::template_distribution_protocol::CancellationToken,
     channel_utils::ReceiverCleanup,
     key_utils::Secp256k1PublicKey,
-    network_helpers::{self, connect_with_noise, resolve_host_port, TCP_CONNECT_TIMEOUT},
+    network_helpers::resolve_host_port,
     stratum_core::{
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,
@@ -30,14 +30,17 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::{net::TcpStream, time::timeout};
 use tracing::{debug, error, info, warn};
 
 use crate::{
     error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl},
-    io_task::spawn_io_tasks,
+    transport::{spawn_conn_pair_io_tasks, JdcConnectors},
     utils::get_setup_connection_message_tp,
 };
+
+#[cfg(feature = "iroh-transport")]
+use crate::config::TemplateProviderIrohConfig;
+use stratum_apps::network_helpers::transport::Sv2Target;
 
 mod message_handler;
 
@@ -126,11 +129,16 @@ impl Sv2Tp {
 
     /// Establish a new connection to a Template Provider.
     ///
-    /// - Opens a TCP connection
-    /// - Performs Noise handshake
-    /// - Spawns IO tasks for inbound/outbound frames
+    /// - Resolves the `tp_address` (`host:port`) via DNS.
+    /// - Dials via the transport-agnostic [`JdcConnectors`]; with the
+    ///   `iroh-transport` feature on and `template_provider_iroh` configured,
+    ///   the dial can prefer iroh and fall back to TCP. Plan §"Phase 4 —
+    ///   Client-side fallback + remaining roles" / PR 4b.
+    /// - Spawns bridge IO tasks to wire the resulting [`ConnPair`] into the
+    ///   existing `Sv2Frame` channels.
     ///
     /// Retries up to 3 times before returning [`JDCError::Shutdown`].
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         tp_address: String,
         public_key: Option<Secp256k1PublicKey>,
@@ -138,76 +146,74 @@ impl Sv2Tp {
         channel_manager_sender: Sender<TemplateDistribution<'static>>,
         cancellation_token: CancellationToken,
         task_manager: Arc<TaskManager>,
+        connectors: JdcConnectors,
+        #[cfg(feature = "iroh-transport")] iroh_cfg: Option<TemplateProviderIrohConfig>,
     ) -> JDCResult<Sv2Tp, error::TemplateProvider> {
         const MAX_RETRIES: usize = 3;
+
+        let resolved_addr = resolve_host_port(tp_address.as_str()).await.map_err(|e| {
+            error!("Failed to resolve TP address {tp_address}: {e}");
+            JDCError::shutdown(JDCErrorKind::NetworkHelpersError(e.into()))
+        })?;
 
         for attempt in 1..=MAX_RETRIES {
             info!(attempt, MAX_RETRIES, "Connecting to template provider");
 
-            match timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(tp_address.as_str()))
-                .await
-                .map_err(JDCError::shutdown)?
-            {
-                Ok(stream) => {
-                    info!(
-                        attempt,
-                        "TCP connection established, starting Noise handshake"
+            let target = build_tp_target(
+                resolved_addr,
+                public_key,
+                #[cfg(feature = "iroh-transport")]
+                iroh_cfg.as_ref(),
+            );
+
+            let dial_result = tokio::select! {
+                biased;
+                _ = cancellation_token.cancelled() => {
+                    info!("Shutdown received during dial, dropping connection");
+                    return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
+                }
+                res = connectors.connect_tp::<Message>(&target) => res,
+            };
+
+            match dial_result {
+                Ok(conn_pair) => {
+                    info!(attempt, "TP dial succeeded; setting up bridge IO tasks");
+
+                    let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
+                    let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
+
+                    spawn_conn_pair_io_tasks(
+                        task_manager.clone(),
+                        conn_pair,
+                        outbound_rx,
+                        inbound_tx,
+                        cancellation_token.clone(),
+                        None,
                     );
 
-                    tokio::select! {
-                        biased;
+                    let sv2_tp_io = Sv2TpIo {
+                        channel_manager_receiver,
+                        channel_manager_sender,
+                        tp_receiver: inbound_rx,
+                        tp_sender: outbound_tx,
+                    };
 
-                         _ = cancellation_token.cancelled() => {
-                            info!("Shutdown received during handshake, dropping connection");
-                            return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
-                        }
-                        result = connect_with_noise(stream, public_key) => {
-                            match result {
-                                Ok(noise_stream) => {
-                                    info!(attempt, "Noise handshake completed successfully");
-
-                                    let (noise_stream_reader, noise_stream_writer) =
-                                        noise_stream.into_split();
-
-                                    let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
-                                    let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
-
-                                    info!(attempt, "Spawning IO tasks for template receiver");
-                                    spawn_io_tasks(
-                                        task_manager.clone(),
-                                        noise_stream_reader,
-                                        noise_stream_writer,
-                                        outbound_rx,
-                                        inbound_tx,
-                                        cancellation_token.clone(),
-                                        None,
-                                    );
-
-                                    let sv2_tp_io = Sv2TpIo {
-                                        channel_manager_receiver,
-                                        channel_manager_sender,
-                                        tp_receiver: inbound_rx,
-                                        tp_sender: outbound_tx,
-                                    };
-
-                                    info!(attempt, "TemplateReceiver initialized successfully");
-                                    return Ok(Sv2Tp {
-                                        sv2_tp_io,
-                                        tp_address,
-                                    });
-                                }
-                                Err(network_helpers::Error::InvalidKey) => {
-                                    return Err(JDCError::shutdown(JDCErrorKind::InvalidKey));
-                                }
-                                Err(e) => {
-                                    error!(attempt, error = ?e, "Noise handshake failed");
-                                }
-                            }
-                        }
-                    }
+                    info!(attempt, "TemplateReceiver initialized successfully");
+                    return Ok(Sv2Tp {
+                        sv2_tp_io,
+                        tp_address,
+                    });
+                }
+                Err(stratum_apps::network_helpers::Error::InvalidKey) => {
+                    return Err(JDCError::shutdown(JDCErrorKind::InvalidKey));
                 }
                 Err(e) => {
-                    warn!(attempt, MAX_RETRIES, error = ?e, "Failed to connect to template provider");
+                    warn!(
+                        attempt,
+                        MAX_RETRIES,
+                        error = ?e,
+                        "Failed to connect to template provider"
+                    );
                 }
             }
 
@@ -403,5 +409,40 @@ impl Sv2Tp {
             .await?;
         info!("Handshake with upstream completed successfully");
         Ok(())
+    }
+}
+
+/// Build the [`Sv2Target`] for the JDC→TP dial. With `iroh-transport`
+/// disabled, always a `Sv2Target::Tcp`. With it enabled and TP iroh fields
+/// set, returns the right combined variant per `prefer_transport`.
+#[cfg(feature = "iroh-transport")]
+fn build_tp_target(
+    addr: std::net::SocketAddr,
+    public_key: Option<Secp256k1PublicKey>,
+    iroh_cfg: Option<&TemplateProviderIrohConfig>,
+) -> Sv2Target {
+    match iroh_cfg {
+        Some(cfg) => crate::transport::build_tp_target(
+            addr,
+            public_key,
+            cfg.iroh_node_id.as_deref(),
+            cfg.iroh_relay_url.as_deref(),
+            cfg.prefer_transport,
+        ),
+        None => Sv2Target::Tcp {
+            addr,
+            authority_pubkey: public_key,
+        },
+    }
+}
+
+#[cfg(not(feature = "iroh-transport"))]
+fn build_tp_target(
+    addr: std::net::SocketAddr,
+    public_key: Option<Secp256k1PublicKey>,
+) -> Sv2Target {
+    Sv2Target::Tcp {
+        addr,
+        authority_pubkey: public_key,
     }
 }

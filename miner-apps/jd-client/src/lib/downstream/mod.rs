@@ -13,11 +13,12 @@ use stratum_apps::{
     channel_utils::ReceiverCleanup,
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::noise_stream::NoiseTcpStream,
+    network_helpers::transport::ConnPair,
     stratum_core::{
         channels_sv2::server::{
             extended::ExtendedChannel, group::GroupChannel, standard::StandardChannel,
         },
+        codec_sv2::StandardEitherFrame,
         common_messages_sv2::MESSAGE_TYPE_SETUP_CONNECTION,
         handlers_sv2::{HandleCommonMessagesFromClientAsync, HandleExtensionsFromClientAsync},
         parsers_sv2::{parse_message_frame_with_tlvs, AnyMessage, Mining, Tlv},
@@ -25,12 +26,9 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::types::{DownstreamId, Message, Sv2Frame},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn, Instrument as _};
 
-use crate::{
-    error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl},
-    io_task::spawn_io_tasks,
-};
+use crate::error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl};
 
 use stratum_apps::utils::types::ChannelId;
 
@@ -163,6 +161,21 @@ impl Downstream {
     }
 
     /// Creates a new [`Downstream`] instance and spawns the necessary I/O tasks.
+    ///
+    /// `conn_pair` is the post-handshake, post-codec channel pair produced by
+    /// the role's [`Sv2Listener`](stratum_apps::network_helpers::transport::Sv2Listener)
+    /// (TCP+Noise or iroh+Noise). The transport-specific reader/writer tasks
+    /// already run inside the listener's `Connection`/`IrohConnection`; here we
+    /// only spawn a thin bridge pair that:
+    ///
+    /// * filters out the post-Noise [`Frame::HandShake`] case (which should
+    ///   never appear on a properly handshaken stream — treated as a hard
+    ///   error, matching the prior `spawn_io_tasks` behavior),
+    /// * funnels [`Frame::Sv2`] frames into `inbound_tx`,
+    /// * pulls [`Sv2Frame`]s from `outbound_rx` and re-wraps them as
+    ///   [`StandardEitherFrame::Sv2`] for the listener-side writer,
+    /// * registers each side with the [`FallbackCoordinator`] so a fallback
+    ///   tear-down completes deterministically.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         downstream_id: DownstreamId,
@@ -170,7 +183,7 @@ impl Downstream {
         group_channel: GroupChannel<'static>,
         channel_manager_sender: Sender<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         channel_manager_receiver: Receiver<(Mining<'static>, Option<Vec<Tlv>>)>,
-        noise_stream: NoiseTcpStream<Message>,
+        conn_pair: ConnPair<Message>,
         cancellation_token: CancellationToken,
         fallback_coordinator: FallbackCoordinator,
         task_manager: Arc<TaskManager>,
@@ -178,21 +191,21 @@ impl Downstream {
         required_extensions: Vec<u16>,
         #[cfg(feature = "monitoring")] connection_ip: IpAddr,
     ) -> Self {
-        let (noise_stream_reader, noise_stream_writer) = noise_stream.into_split();
+        let (transport_rx, transport_tx) = conn_pair;
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
         // Create a per-connection child token so we can cancel this
         // connection's I/O tasks independently of the global shutdown.
         let downstream_cancellation_token = cancellation_token.child_token();
-        spawn_io_tasks(
+        spawn_bridge_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            transport_rx,
+            transport_tx,
             outbound_rx,
             inbound_tx,
             downstream_cancellation_token.clone(),
-            Some(fallback_coordinator.clone()),
+            fallback_coordinator.clone(),
         );
 
         let downstream_io = DownstreamIo {
@@ -409,5 +422,149 @@ impl Downstream {
             }
         }
         Ok(())
+    }
+}
+
+/// Bridges a transport-agnostic [`ConnPair`] into the per-downstream
+/// [`Sv2Frame`] channels that the rest of the JDC pipeline consumes.
+///
+/// Replaces the legacy `spawn_io_tasks` reader/writer pair for the downstream
+/// listener after the move to the
+/// [`Sv2Listener`](stratum_apps::network_helpers::transport::Sv2Listener)
+/// abstraction. The Noise reader/writer themselves now live inside the
+/// listener's transport-specific connection (TCP `Connection::new` or
+/// `IrohConnection`); this only translates between
+/// [`StandardEitherFrame`]\<Message\> on the listener side and [`Sv2Frame`]
+/// on the downstream-handler side, while preserving the original fallback /
+/// cancellation semantics.
+#[track_caller]
+fn spawn_bridge_tasks(
+    task_manager: Arc<TaskManager>,
+    transport_rx: Receiver<StandardEitherFrame<Message>>,
+    transport_tx: Sender<StandardEitherFrame<Message>>,
+    outbound_rx: Receiver<Sv2Frame>,
+    inbound_tx: Sender<Sv2Frame>,
+    cancellation_token: CancellationToken,
+    fallback_coordinator: FallbackCoordinator,
+) {
+    let caller = std::panic::Location::caller();
+
+    // Reader bridge: transport_rx -> inbound_tx (Sv2 only, drop handshake).
+    {
+        let cancellation_token_clone = cancellation_token.clone();
+        let fallback_coordinator_clone = fallback_coordinator.clone();
+        let inbound_tx_clone = inbound_tx.clone();
+        let outbound_rx_clone = outbound_rx.clone();
+        task_manager.spawn(
+            async move {
+                let fallback_handler = fallback_coordinator_clone.register();
+                let fallback_token = fallback_coordinator_clone.token();
+
+                trace!("Downstream reader bridge started");
+
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation_token_clone.cancelled() => {
+                            trace!("Downstream reader bridge: received shutdown signal");
+                            break;
+                        }
+                        _ = fallback_token.cancelled() => {
+                            trace!("Downstream reader bridge: received fallback signal");
+                            break;
+                        }
+                        res = transport_rx.recv() => {
+                            match res {
+                                Ok(StandardEitherFrame::Sv2(sv2_frame)) => {
+                                    trace!("Downstream reader bridge: forwarding inbound frame");
+                                    if let Err(e) = inbound_tx_clone.send(sv2_frame).await {
+                                        error!(error = ?e, "Downstream reader bridge: failed to forward inbound frame");
+                                        break;
+                                    }
+                                }
+                                Ok(StandardEitherFrame::HandShake(frame)) => {
+                                    error!(?frame, "Downstream reader bridge: unexpected handshake frame");
+                                    drop(frame);
+                                    break;
+                                }
+                                Err(_) => {
+                                    warn!("Downstream reader bridge: transport receiver closed");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                inbound_tx_clone.close();
+                outbound_rx_clone.close_and_drain();
+                drop(inbound_tx_clone);
+                drop(outbound_rx_clone);
+                fallback_handler.done();
+                trace!("Downstream reader bridge exited");
+            }
+            .instrument(tracing::trace_span!(
+                "downstream_reader_bridge",
+                spawned_at = %format!("{}:{}", caller.file(), caller.line())
+            )),
+        );
+    }
+
+    // Writer bridge: outbound_rx -> transport_tx (re-wrap as EitherFrame).
+    {
+        let cancellation_token_clone = cancellation_token;
+        let inbound_tx_clone = inbound_tx;
+        task_manager.spawn(
+            async move {
+                let fallback_handler = fallback_coordinator.register();
+                let fallback_token = fallback_coordinator.token();
+
+                trace!("Downstream writer bridge started");
+
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation_token_clone.cancelled() => {
+                            trace!("Downstream writer bridge: received shutdown signal");
+                            break;
+                        }
+                        _ = fallback_token.cancelled() => {
+                            trace!("Downstream writer bridge: received fallback signal");
+                            break;
+                        }
+                        res = outbound_rx.recv() => {
+                            match res {
+                                Ok(frame) => {
+                                    trace!("Downstream writer bridge: sending outbound frame");
+                                    let either: StandardEitherFrame<Message> =
+                                        StandardEitherFrame::Sv2(frame);
+                                    if let Err(e) = transport_tx.send(either).await {
+                                        error!(error = ?e, "Downstream writer bridge: transport send failed");
+                                        break;
+                                    }
+                                }
+                                Err(_) => {
+                                    warn!("Downstream writer bridge: outbound channel closed");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                outbound_rx.close_and_drain();
+                inbound_tx_clone.close();
+                transport_tx.close();
+                drop(outbound_rx);
+                drop(inbound_tx_clone);
+                drop(transport_tx);
+                fallback_handler.done();
+                trace!("Downstream writer bridge exited");
+            }
+            .instrument(tracing::trace_span!(
+                "downstream_writer_bridge",
+                spawned_at = %format!("{}:{}", caller.file(), caller.line())
+            )),
+        );
     }
 }

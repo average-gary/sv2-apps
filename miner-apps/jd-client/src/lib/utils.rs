@@ -59,6 +59,20 @@ pub struct UpstreamEntry {
     pub authority_pubkey: Secp256k1PublicKey,
     pub tried_or_flagged: bool,
     pub user_identity: String,
+    /// Optional base32 iroh `NodeId` for the upstream pool. Phase 4b. None
+    /// means TCP-only for this leg of this upstream.
+    #[cfg(feature = "iroh-transport")]
+    pub iroh_pool_node_id: Option<String>,
+    /// Optional base32 iroh `NodeId` for the upstream JDS. Phase 4b.
+    #[cfg(feature = "iroh-transport")]
+    pub iroh_jds_node_id: Option<String>,
+    /// Optional iroh relay URL hint shared by pool + JDS for this upstream.
+    #[cfg(feature = "iroh-transport")]
+    pub iroh_relay_url: Option<String>,
+    /// Per-upstream transport preference (tcp / iroh / iroh_then_tcp /
+    /// tcp_then_iroh).
+    #[cfg(feature = "iroh-transport")]
+    pub prefer_transport: crate::config::PreferTransport,
 }
 
 /// Constructs a `SetupConnection` message for the mining protocol.

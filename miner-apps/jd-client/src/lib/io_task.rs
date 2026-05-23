@@ -1,3 +1,12 @@
+// Legacy NoiseTcp{Read,Write}Half-based reader/writer task spawner. Phase 4b
+// replaced the three outbound dial sites with the transport-agnostic
+// `JdcConnectors` + `spawn_conn_pair_io_tasks` path in
+// `crate::transport`. This file is retained intentionally to keep upstream
+// rebases trivial: a future PR may bring back call sites that want the raw
+// Noise reader/writer pair, and the module exists at the same path it always
+// did. `#[allow(dead_code)]` silences the warning until that happens.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};

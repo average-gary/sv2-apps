@@ -62,6 +62,22 @@ pool_port = 3333
 jds_address = "127.0.0.1"
 jds_port = 3334
 user_identity = "your_primary_username_here"
+# ----- Optional iroh-transport fields (Phase 4b — JDC outbound dials) -----
+# Requires running JDC with `--features iroh-transport`.
+#
+# iroh_pool_node_id: base32-lowercase NodeId of the upstream pool's iroh
+#   listener (`sv2/pool/0`). Required to enable iroh dialing for this pool.
+# iroh_jds_node_id: same shape, for the JDS listener (`sv2/jds/0`).
+# iroh_relay_url: shared relay hint for both pool and JDS dials of this
+#   upstream. Empty/omitted = direct UDP only.
+# prefer_transport: one of "tcp" | "iroh" | "iroh_then_tcp" (default) |
+#   "tcp_then_iroh". When iroh fields are set but prefer_transport is "tcp",
+#   the iroh fields are ignored.
+#
+# iroh_pool_node_id  = "k51qzi5uqu5dl..."
+# iroh_jds_node_id   = "k51qzi5uqu5dl..."
+# iroh_relay_url     = ""
+# prefer_transport   = "iroh_then_tcp"
 
 [[upstreams]]
 authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
@@ -70,8 +86,76 @@ pool_port = 3333
 jds_address = "75.119.150.111"
 jds_port = 3334
 user_identity = "your_backup_username_here"
+# iroh_pool_node_id  = "k51qzi5uqu5dl..."
+# iroh_jds_node_id   = "k51qzi5uqu5dl..."
+# iroh_relay_url     = ""
+# prefer_transport   = "iroh_then_tcp"
 
 # Local Sv2 Template Provider config
 [template_provider_type.Sv2Tp]
 # address accepts "ip:port" or "hostname:port" (e.g. "tp.example.com:8442")
 address = "127.0.0.1:8442"
+
+# ----- Optional iroh-transport for the JDC→TP dial (Phase 4b) -----
+# Same semantics as the per-upstream iroh fields above. Only honored when
+# `template_provider_type` is `Sv2Tp` (BitcoinCoreIpc uses a UNIX socket).
+#
+# [template_provider_iroh]
+# iroh_node_id     = "k51qzi5uqu5dl..."
+# iroh_relay_url   = ""
+# prefer_transport = "iroh_then_tcp"
+
+# ----------------------------------------------------------------------------
+# [iroh] — JDC's downstream listener over the iroh transport
+# ----------------------------------------------------------------------------
+#
+# Proxies / mining-clients connect to JDC here. When this block is present and
+# the `iroh-transport` Cargo feature is enabled, JDC binds an iroh QUIC
+# endpoint alongside the TCP `listening_address` above, accepting Sv2
+# connections from either transport (a "Dual" listener fans both into one
+# accept channel).
+#
+# When this block is absent, JDC speaks TCP only — preserving the legacy
+# behavior with zero changes for existing deployments.
+#
+# Run with: cargo run --bin jd_client --features iroh-transport -- -c <this file>
+#
+# All keys other than the two required ones below have sensible defaults; see
+# stratum_apps::network_helpers::iroh::IrohRoleConfig for the full schema.
+#
+# [iroh]
+# # UDP socket the iroh endpoint binds. Use [::]:34266 for IPv6 dual-stack.
+# listen_address = "0.0.0.0:34266"
+# # 32-byte raw Ed25519 secret key file (mode 0600). Auto-generated if missing.
+# # NodeId lifecycle is independent of the SV2 authority key above.
+# secret_key_path = "~/.config/sv2/jdc/iroh-secret.ed25519"
+#
+# # Optional: relay URL for hole-punching when peers are double-NATed.
+# # Empty = direct UDP only; set to a self-hosted relay for production.
+# # relay_url = ""
+#
+# # QUIC keepalive (Fedimint PR #8422 — production lesson).
+# # max_idle_timeout_secs    = 60
+# # keep_alive_interval_secs = 30
+# # per_request_timeout_secs = 30   # Fedimint PR #8571 — slowloris defense.
+#
+# # Per-mechanism discovery toggles (env vars override these).
+# # discovery_relay_enable      = true
+# # discovery_pkarr_pub_enable  = true
+# # discovery_pkarr_res_enable  = true
+# # discovery_dht_enable        = false
+# # discovery_n0_enable         = true
+#
+# # Operator-supplied dial overrides for known NodeIds.
+# # [iroh.connection_overrides]
+# # "k51qzi5uqu5dl..." = "192.0.2.5:34266"
+#
+# # QUIC-layer admission policy. "open" admits any NodeId; "whitelist" admits
+# # only the listed NodeIds, rejecting unknown peers BEFORE any SV2 bytes flow
+# # (two-layer identity model — see plan §"Two-layer identity model").
+# # Mutable at runtime via the AdmissionHandle returned by IrohSv2Listener.
+# # [iroh.admission]
+# # mode = "open"
+# # allowed_node_ids = [
+# #   # "k51qzi5uqu5dl...",
+# # ]
