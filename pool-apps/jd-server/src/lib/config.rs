@@ -25,6 +25,17 @@ pub struct JDSPartialConfig {
     supported_extensions: Vec<u16>,
     #[serde(default)]
     required_extensions: Vec<u16>,
+    /// Optional iroh-transport configuration. When present (and the
+    /// `iroh-transport` feature is enabled), the JDS downstream listener
+    /// accepts JDP connections over both TCP and iroh QUIC simultaneously.
+    /// See plan §"Per-role `[iroh]` section" for the full schema.
+    ///
+    /// Note: `JDSPartialConfig` does NOT use `#[serde(deny_unknown_fields)]`,
+    /// so when the `iroh-transport` feature is disabled the `[jds.iroh]` TOML
+    /// section is silently ignored rather than rejected.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh: Option<stratum_apps::network_helpers::iroh::IrohRoleConfig>,
 }
 
 /// Complete JDS configuration with all required fields populated.
@@ -40,6 +51,10 @@ pub struct JDSConfig {
     coinbase_reward_script: CoinbaseRewardScript,
     supported_extensions: Vec<u16>,
     required_extensions: Vec<u16>,
+    /// Optional iroh-transport configuration propagated from
+    /// [`JDSPartialConfig::iroh`]. See plan §"Per-role `[iroh]` section".
+    #[cfg(feature = "iroh-transport")]
+    iroh: Option<stratum_apps::network_helpers::iroh::IrohRoleConfig>,
 }
 
 impl JDSPartialConfig {
@@ -52,6 +67,8 @@ impl JDSPartialConfig {
             listen_address,
             supported_extensions: Vec::new(),
             required_extensions: Vec::new(),
+            #[cfg(feature = "iroh-transport")]
+            iroh: None,
         }
     }
 }
@@ -77,6 +94,8 @@ impl JDSConfig {
             coinbase_reward_script,
             supported_extensions,
             required_extensions,
+            #[cfg(feature = "iroh-transport")]
+            iroh: None,
         }
     }
 
@@ -100,6 +119,8 @@ impl JDSConfig {
             coinbase_reward_script,
             supported_extensions: partial.supported_extensions,
             required_extensions: partial.required_extensions,
+            #[cfg(feature = "iroh-transport")]
+            iroh: partial.iroh,
         }
     }
 
@@ -136,5 +157,13 @@ impl JDSConfig {
     /// SV2 extension types that JDS requires from downstreams.
     pub fn required_extensions(&self) -> &[u16] {
         &self.required_extensions
+    }
+
+    /// Optional iroh-transport configuration. Only present when the
+    /// `iroh-transport` feature is compiled in and a `[jds.iroh]` block was
+    /// supplied in TOML.
+    #[cfg(feature = "iroh-transport")]
+    pub fn iroh(&self) -> Option<&stratum_apps::network_helpers::iroh::IrohRoleConfig> {
+        self.iroh.as_ref()
     }
 }

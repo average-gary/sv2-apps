@@ -22,7 +22,7 @@ use std::{
 use stratum_apps::{
     bitcoin_core_sv2::common::job_declaration_protocol::CancellationToken,
     custom_mutex::Mutex,
-    network_helpers::noise_stream::NoiseTcpStream,
+    network_helpers::transport::ConnPair,
     stratum_core::{
         common_messages_sv2::MESSAGE_TYPE_SETUP_CONNECTION,
         framing_sv2,
@@ -110,11 +110,16 @@ impl Downstream {
         }
     }
 
-    /// Creates a new [`Downstream`] and spawns its Noise I/O tasks.
+    /// Creates a new [`Downstream`] and spawns its transport I/O adapter tasks.
+    ///
+    /// `conn_pair` is the [`ConnPair<Message>`] returned by
+    /// [`Sv2Listener::accept`](stratum_apps::network_helpers::transport::Sv2Listener::accept) —
+    /// the SV2 Noise NX handshake has already completed inside the listener,
+    /// regardless of whether the underlying transport is TCP or iroh QUIC.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         downstream_id: DownstreamId,
-        noise_stream: NoiseTcpStream<Message>,
+        conn_pair: ConnPair<Message>,
         to_job_declarator_sender: Sender<DownstreamJobDeclarationMessage>,
         from_job_declarator_receiver: Receiver<JobDeclarationMessage>,
         supported_extensions: Vec<u16>,
@@ -122,7 +127,6 @@ impl Downstream {
         task_manager: Arc<TaskManager>,
         global_cancellation_token: CancellationToken,
     ) -> Self {
-        let (noise_stream_reader, noise_stream_writer) = noise_stream.into_split();
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
@@ -130,8 +134,7 @@ impl Downstream {
 
         spawn_io_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            conn_pair,
             outbound_rx,
             inbound_tx,
             downstream_cancellation_token.clone(),

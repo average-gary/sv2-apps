@@ -27,7 +27,7 @@ use stratum_apps::{
     bitcoin_core_sv2::common::job_declaration_protocol::CancellationToken,
     config_helpers::CoinbaseRewardScript,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
-    network_helpers::accept_noise_connection,
+    network_helpers::transport::{Sv2Listener, TcpSv2Listener},
     stratum_core::{
         handlers_sv2::HandleJobDeclarationMessagesFromClientAsync,
         mining_sv2::{
@@ -39,8 +39,14 @@ use stratum_apps::{
     task_manager::TaskManager,
     utils::types::{DownstreamId, JdToken},
 };
-use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
+
+use crate::job_declarator::dual_listener::DualSv2Listener;
+
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::iroh::{
+    alpn::SV2_JDS_ALPN, endpoint::build_endpoint, listener::IrohSv2Listener, IrohRoleConfig,
+};
 
 // see https://github.com/stratum-mining/sv2-apps/issues/335
 const TEMPORARY_TIMEOUT_MULTIPLIER: u64 = 144;
@@ -56,6 +62,7 @@ const ACTIVE_TOKEN_TIMEOUT_SECS: u64 = 10;
 const JANITOR_INTERVAL_SECS: u64 = 10;
 
 mod downstream;
+mod dual_listener;
 mod job_declaration_message_handler;
 pub mod job_validation;
 pub mod token_management;
@@ -176,8 +183,9 @@ impl JobDeclarator {
         }
     }
 
-    /// Binds a TCP listener and spawns the accept loop that creates a `Downstream`
-    /// for every new Noise-encrypted connection.
+    /// Binds the JDS downstream listener (TCP, plus iroh QUIC when configured)
+    /// and spawns the accept loop that creates a `Downstream` for every new
+    /// Noise-encrypted connection.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_downstream_server(
         self,
@@ -189,15 +197,63 @@ impl JobDeclarator {
         cancellation_token: CancellationToken,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
+        #[cfg(feature = "iroh-transport")] iroh: Option<IrohRoleConfig>,
     ) -> JDSResult<(), error::JobDeclarator> {
         info!("Starting downstream server at {listening_address}");
-        let server = TcpListener::bind(listening_address)
-            .await
-            .map_err(|e| {
-                error!(error = ?e, "Failed to bind downstream server at {listening_address}");
-                e
-            })
-            .map_err(JDSError::shutdown)?;
+        let tcp = TcpSv2Listener::bind(
+            listening_address,
+            authority_public_key,
+            authority_secret_key,
+            cert_validity_sec,
+        )
+        .await
+        .map_err(|e| {
+            error!(error = ?e, "Failed to bind downstream server at {listening_address}");
+            JDSError::shutdown(JDSErrorKind::InvalidConfig(format!(
+                "TcpSv2Listener::bind {listening_address}: {e}"
+            )))
+        })?;
+
+        // Iroh listener (optional, gated on feature + presence of `[jds.iroh]`).
+        #[cfg(feature = "iroh-transport")]
+        let iroh_listener = if let Some(cfg) = iroh {
+            let resolved = cfg.resolve().map_err(|e| {
+                error!(error = ?e, "Failed to resolve [jds.iroh] config");
+                JDSError::shutdown(JDSErrorKind::InvalidConfig(format!(
+                    "[jds.iroh] resolve: {e}"
+                )))
+            })?;
+            let mut endpoint_config = resolved.endpoint_config;
+            endpoint_config.alpns = vec![SV2_JDS_ALPN.to_vec()];
+            info!(
+                listen = %endpoint_config.listen_address,
+                "Building JDS iroh endpoint (ALPN sv2/jds/0)"
+            );
+            let endpoint = build_endpoint(&endpoint_config).await.map_err(|e| {
+                error!(error = ?e, "Failed to build JDS iroh endpoint");
+                JDSError::shutdown(JDSErrorKind::InvalidConfig(format!(
+                    "build JDS iroh endpoint: {e}"
+                )))
+            })?;
+            Some(IrohSv2Listener::new(
+                endpoint,
+                resolved.admission,
+                authority_public_key,
+                authority_secret_key,
+                cert_validity_sec,
+                SV2_JDS_ALPN,
+                resolved.per_request_timeout,
+            ))
+        } else {
+            None
+        };
+
+        let listener: Arc<dyn Sv2Listener<stratum_apps::utils::types::Message>> =
+            Arc::new(DualSv2Listener::spawn(
+                tcp,
+                #[cfg(feature = "iroh-transport")]
+                iroh_listener,
+            ));
 
         let task_manager_clone = task_manager.clone();
         let cancellation_token_clone = cancellation_token.clone();
@@ -208,10 +264,10 @@ impl JobDeclarator {
                         info!("Job Declarator: cancellation token triggered");
                         break;
                     }
-                    res = server.accept() => {
+                    res = listener.accept() => {
                         match res {
-                            Ok((stream, socket_address)) => {
-                                info!(%socket_address, "New downstream connection");
+                            Ok((peer, conn_pair)) => {
+                                info!(?peer, "New downstream connection");
 
                                 let this = self.clone();
                                 let cancellation_token_inner = cancellation_token_clone.clone();
@@ -220,27 +276,6 @@ impl JobDeclarator {
                                 let required_extensions_inner = required_extensions.clone();
 
                                 task_manager_clone.spawn(async move {
-                                    let noise_stream = tokio::select! {
-                                        result = accept_noise_connection(
-                                            stream,
-                                            authority_public_key,
-                                            authority_secret_key,
-                                            cert_validity_sec,
-                                        ) => {
-                                            match result {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    error!(error = ?e, "Noise handshake failed");
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                        _ = cancellation_token_inner.cancelled() => {
-                                            info!("Shutdown received during handshake, dropping connection");
-                                            return;
-                                        }
-                                    };
-
                                     let downstream_id = this
                                         .downstream_id_factory
                                         .fetch_add(1, Ordering::SeqCst);
@@ -252,7 +287,7 @@ impl JobDeclarator {
 
                                     let downstream = Downstream::new(
                                         downstream_id,
-                                        noise_stream,
+                                        conn_pair,
                                         to_job_declarator_sender,
                                         to_downstream_receiver,
                                         supported_extensions_inner,

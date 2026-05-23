@@ -28,3 +28,8 @@ hotpath = "0.14.0"
 [features]
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
+# Enables the iroh-based SV2 transport alongside TCP. When this feature is
+# enabled AND a `[jds.iroh]` block is present in the JDS config, the JDS
+# downstream listener accepts JDC connections over both TCP and iroh QUIC
+# simultaneously. See plan §"Phase 3 — Server-side dual transport" / PR 3b.
+iroh-transport = ["stratum-apps/iroh-transport"]
