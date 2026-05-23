@@ -52,7 +52,7 @@ pub type ConnPair<M> = (
 /// only on the dialing side — Noise NX gives the server's authority pubkey to
 /// the client, not the other way around).
 ///
-/// On the iroh path, the peer also presents an [`iroh::NodeId`] at QUIC
+/// On the iroh path, the peer also presents an [`iroh::EndpointId`] at QUIC
 /// handshake time (before any SV2 bytes flow). The `iroh_node_id` field is
 /// present on both paths to keep the struct shape uniform across feature
 /// combinations; it is populated only for iroh accept/connect.
@@ -73,7 +73,7 @@ pub struct PeerIdentity {
     /// The QUIC-layer NodeId observed at iroh accept/connect time, if any.
     /// Always `None` on the TCP path. Populated by iroh impls in Wave 3b.
     #[cfg(feature = "iroh-transport")]
-    pub iroh_node_id: Option<iroh::NodeId>,
+    pub iroh_node_id: Option<iroh::EndpointId>,
 
     /// Placeholder so the struct shape is stable across feature combinations.
     /// Always `None` when `iroh-transport` is disabled.
@@ -124,14 +124,14 @@ pub enum Sv2Target {
     #[cfg(feature = "iroh-transport")]
     Iroh {
         /// iroh dial address (NodeId + optional direct/relay hints).
-        node_addr: iroh::NodeAddr,
+        node_addr: iroh::EndpointAddr,
         /// Optional SV2 authority pubkey to verify after Noise handshake.
         authority_pubkey: Option<Secp256k1PublicKey>,
     },
     /// Try iroh first; on failure, fall back to TCP.
     #[cfg(feature = "iroh-transport")]
     IrohThenTcp {
-        node_addr: iroh::NodeAddr,
+        node_addr: iroh::EndpointAddr,
         tcp_addr: SocketAddr,
         authority_pubkey: Option<Secp256k1PublicKey>,
     },
@@ -139,7 +139,7 @@ pub enum Sv2Target {
     #[cfg(feature = "iroh-transport")]
     TcpThenIroh {
         tcp_addr: SocketAddr,
-        node_addr: iroh::NodeAddr,
+        node_addr: iroh::EndpointAddr,
         authority_pubkey: Option<Secp256k1PublicKey>,
     },
 }
@@ -400,17 +400,17 @@ pub async fn build_target(
     #[cfg(feature = "iroh-transport")]
     {
         // Resolve the iroh leg only if the caller supplied a node_id.
-        let iroh_leg: Option<iroh::NodeAddr> = match iroh_node_id {
-            Some(s) => match s.parse::<iroh::NodeId>() {
+        let iroh_leg: Option<iroh::EndpointAddr> = match iroh_node_id {
+            Some(s) => match s.parse::<iroh::EndpointId>() {
                 Ok(node_id) => {
                     let relay = iroh_relay_url
                         .filter(|s| !s.is_empty())
                         .and_then(|url| iroh::RelayUrl::from_str(url).ok());
-                    Some(iroh::NodeAddr::from_parts(
-                        node_id,
-                        relay,
-                        std::iter::empty(),
-                    ))
+                    let mut addr = iroh::EndpointAddr::new(node_id);
+                    if let Some(relay) = relay {
+                        addr = addr.with_relay_url(relay);
+                    }
+                    Some(addr)
                 }
                 Err(e) => {
                     warn!(
@@ -560,7 +560,7 @@ where
             } => match &self.iroh {
                 Some(iroh) => {
                     info!(
-                        node_id = %node_addr.node_id,
+                        node_id = %node_addr.id,
                         "CompositeSv2Connector: trying iroh leg"
                     );
                     let iroh_target = Sv2Target::Iroh {
@@ -618,7 +618,7 @@ where
                         Some(iroh) => {
                             warn!(
                                 error = %e,
-                                node_id = %node_addr.node_id,
+                                node_id = %node_addr.id,
                                 "CompositeSv2Connector: TCP leg failed, falling back to iroh"
                             );
                             let iroh_target = Sv2Target::Iroh {
@@ -774,11 +774,11 @@ mod tests {
     #[cfg(feature = "iroh-transport")]
     #[tokio::test]
     async fn tcp_connector_rejects_iroh_target() {
-        use ::iroh::{NodeAddr, SecretKey};
+        use ::iroh::{EndpointAddr, SecretKey};
 
-        let secret = SecretKey::generate(rand::rngs::OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
-        let node_addr = NodeAddr::from_parts(node_id, None, std::iter::empty());
+        let node_addr = EndpointAddr::new(node_id);
 
         let connector = TcpSv2Connector::new();
         let target = Sv2Target::Iroh {
@@ -802,7 +802,7 @@ mod tests {
     #[cfg(feature = "iroh-transport")]
     #[tokio::test]
     async fn tcp_connector_handles_iroh_then_tcp_via_fallback() {
-        use ::iroh::{NodeAddr, SecretKey};
+        use ::iroh::{EndpointAddr, SecretKey};
 
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
@@ -830,9 +830,9 @@ mod tests {
 
         // Build an unreachable iroh node addr; the TCP-only connector ignores
         // it and dials `tcp_addr` directly (logging a warning).
-        let secret = SecretKey::generate(rand::rngs::OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
-        let node_addr = NodeAddr::from_parts(node_id, None, std::iter::empty());
+        let node_addr = EndpointAddr::new(node_id);
 
         let connector = TcpSv2Connector::new();
         let target = Sv2Target::IrohThenTcp {

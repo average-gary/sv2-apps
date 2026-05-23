@@ -97,10 +97,9 @@ pub fn load_or_generate<P: AsRef<Path>>(path: P) -> Result<SecretKey, IdentityEr
     match read_secret_bytes(&expanded) {
         Ok(bytes) => Ok(SecretKey::from_bytes(&bytes)),
         Err(IdentityError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
-            // Auto-generate. `rand::rngs::OsRng` (rand 0.8) implements
-            // `rand_core::CryptoRngCore` from rand_core 0.6, which is what
-            // iroh-base 0.91's `SecretKey::generate` requires.
-            let key = SecretKey::generate(&mut rand::rngs::OsRng);
+            // Auto-generate. iroh 1.0-rc's `SecretKey::generate` takes no
+            // arguments and uses `rand::random` internally to obtain entropy.
+            let key = SecretKey::generate();
             persist_inner(&expanded, &key)?;
             Ok(key)
         }
@@ -304,7 +303,7 @@ mod tests {
         let path = dir.path().join("a").join("b").join("c").join("key");
         assert!(!path.parent().unwrap().exists());
 
-        let key = SecretKey::generate(&mut rand::rngs::OsRng);
+        let key = SecretKey::generate();
         persist(&path, &key).expect("persist");
 
         assert!(path.exists(), "key file should exist");

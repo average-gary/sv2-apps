@@ -97,7 +97,7 @@ pub fn total_logical_cpus() -> u32 {
 /// Connect a mining device to a pool listening on iroh transport.
 ///
 /// Mirrors [`connect`] but dials over iroh: opens a QUIC connection to the
-/// supplied [`iroh::NodeAddr`] using `SV2_POOL_ALPN`, opens a bidi stream,
+/// supplied [`iroh::EndpointAddr`] using `SV2_POOL_ALPN`, opens a bidi stream,
 /// runs the SV2 Noise NX initiator handshake inside it, and feeds the
 /// resulting channel pair into [`Device::start`] — i.e. the post-handshake
 /// path is identical to TCP. The `Device` consumes the channel pair without
@@ -109,7 +109,7 @@ pub fn total_logical_cpus() -> u32 {
 #[allow(clippy::too_many_arguments)]
 pub async fn connect_via_iroh(
     endpoint: iroh::Endpoint,
-    node_addr: iroh::NodeAddr,
+    node_addr: iroh::EndpointAddr,
     pub_key: Option<Secp256k1PublicKey>,
     device_id: Option<String>,
     user_id: Option<String>,
@@ -125,18 +125,18 @@ pub async fn connect_via_iroh(
 
     // Capture the bound socket address (for logs / Device::start's
     // `addr` parameter; SetupConnection's endpoint_host/port fields fall out
-    // of this). The NodeAddr's first direct address is the natural choice;
-    // if absent, fall back to a placeholder so we at least keep the SV2
-    // SetupConnection well-formed.
+    // of this). The EndpointAddr's first IP transport address is the natural
+    // choice; if absent, fall back to a placeholder so we at least keep the
+    // SV2 SetupConnection well-formed.
     let address: SocketAddr = node_addr
-        .direct_addresses()
+        .ip_addrs()
         .next()
         .copied()
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
 
     info!(
         "MiningDevice (iroh): connecting to pool node {} via {}",
-        node_addr.node_id, address
+        node_addr.id, address
     );
 
     let connector = IrohSv2Connector::new(

@@ -34,7 +34,7 @@ use std::{
 // the role-config helpers don't expose. The Wave 6a helpers exist for the
 // per-role pool/JDS/translator integration tests, not these adversarial
 // regressions.
-use iroh::{Endpoint, NodeAddr, RelayMode, SecretKey};
+use iroh::{endpoint::presets, Endpoint, EndpointAddr, RelayMode, SecretKey};
 use stratum_apps::{
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
     network_helpers::{
@@ -109,10 +109,11 @@ fn extract_payload(frame: &mut StandardEitherFrame<AnyMessage<'static>>) -> Vec<
 /// Build a fresh client iroh `Endpoint` bound to loopback with discovery
 /// disabled. Suitable for any test in this file.
 async fn build_client_endpoint() -> Endpoint {
-    Endpoint::builder()
-        .secret_key(SecretKey::generate(rand::rngs::OsRng))
+    Endpoint::builder(presets::Minimal)
+        .secret_key(SecretKey::generate())
         .relay_mode(RelayMode::Disabled)
-        .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .expect("bind addr v4")
         .bind()
         .await
         .expect("bind client endpoint")
@@ -121,14 +122,15 @@ async fn build_client_endpoint() -> Endpoint {
 /// Build a server iroh `Endpoint` bound to loopback that registers `alpn`.
 /// Returns the endpoint, its NodeId, and the bound socket address suitable
 /// for handing to a peer's `Sv2Target::Iroh.node_addr` direct-address list.
-async fn build_server_endpoint(alpn: &'static [u8]) -> (Endpoint, iroh::NodeId, SocketAddr) {
-    let secret = SecretKey::generate(rand::rngs::OsRng);
+async fn build_server_endpoint(alpn: &'static [u8]) -> (Endpoint, iroh::EndpointId, SocketAddr) {
+    let secret = SecretKey::generate();
     let node_id = secret.public();
-    let ep = Endpoint::builder()
+    let ep = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
         .alpns(vec![alpn.to_vec()])
         .relay_mode(RelayMode::Disabled)
-        .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .expect("bind addr v4")
         .bind()
         .await
         .expect("bind server endpoint");
@@ -209,13 +211,9 @@ async fn prefer_iroh_then_tcp_falls_back_when_iroh_unreachable() {
     //    only to harvest a NodeId; the direct address points at a port that
     //    has no iroh listener running. iroh on 0.91 surfaces this as a dial
     //    error rather than hanging forever (relay disabled, no discovery).
-    let stranger_node_id = SecretKey::generate(rand::rngs::OsRng).public();
+    let stranger_node_id = SecretKey::generate().public();
     let unreachable_socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
-    let unreachable_iroh = NodeAddr::from_parts(
-        stranger_node_id,
-        None,
-        std::iter::once(unreachable_socket),
-    );
+    let unreachable_iroh = EndpointAddr::new(stranger_node_id).with_ip_addr(unreachable_socket);
 
     // 3. Composite client: TCP+iroh. The iroh leg's per-request timeout is
     //    short so the dial doesn't hang on the unreachable target.
@@ -384,7 +382,7 @@ async fn iroh_admission_whitelist_runtime_update() {
         Duration::from_secs(5),
     );
     let target_a = Sv2Target::Iroh {
-        node_addr: NodeAddr::from_parts(server_node_id, None, std::iter::once(server_socket)),
+        node_addr: EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
         authority_pubkey: Some(auth_pub),
     };
     let (rx_a, tx_a) = <IrohSv2Connector as Sv2Connector<AnyMessage<'static>>>::connect(
@@ -404,7 +402,7 @@ async fn iroh_admission_whitelist_runtime_update() {
     // Build a known third-party NodeId that we will dial in step B. Add it
     // to the whitelist. Connection A's NodeId is intentionally NOT on the
     // list — this is exactly the spec's edge case.
-    let device_b_secret = SecretKey::generate(rand::rngs::OsRng);
+    let device_b_secret = SecretKey::generate();
     let device_b_node_id = device_b_secret.public();
     let mut wl = BTreeSet::new();
     wl.insert(device_b_node_id);
@@ -413,7 +411,7 @@ async fn iroh_admission_whitelist_runtime_update() {
     // Sanity: the handle reports our intent.
     assert!(admission.admits(&device_b_node_id), "B should be admitted");
     // Connection A's NodeId is not in the whitelist.
-    let connection_a_node_id = SecretKey::generate(rand::rngs::OsRng).public();
+    let connection_a_node_id = SecretKey::generate().public();
     assert!(
         !admission.admits(&connection_a_node_id),
         "random non-listed NodeId must be denied"
@@ -451,7 +449,7 @@ async fn iroh_admission_whitelist_runtime_update() {
         Duration::from_secs(3),
     );
     let target_c = Sv2Target::Iroh {
-        node_addr: NodeAddr::from_parts(server_node_id, None, std::iter::once(server_socket)),
+        node_addr: EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
         authority_pubkey: Some(auth_pub),
     };
     let res_c = <IrohSv2Connector as Sv2Connector<AnyMessage<'static>>>::connect(
@@ -464,10 +462,11 @@ async fn iroh_admission_whitelist_runtime_update() {
 
     // ----- Connection B: the whitelisted NodeId (built from `device_b_secret`)
     //       successfully connects. -----
-    let client_ep_b = Endpoint::builder()
+    let client_ep_b = Endpoint::builder(presets::Minimal)
         .secret_key(device_b_secret)
         .relay_mode(RelayMode::Disabled)
-        .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .expect("bind addr v4")
         .bind()
         .await
         .expect("bind whitelisted client endpoint");
@@ -490,7 +489,7 @@ async fn iroh_admission_whitelist_runtime_update() {
         Duration::from_secs(5),
     );
     let target_b = Sv2Target::Iroh {
-        node_addr: NodeAddr::from_parts(server_node_id, None, std::iter::once(server_socket)),
+        node_addr: EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
         authority_pubkey: Some(auth_pub),
     };
     let (rx_b, tx_b) = <IrohSv2Connector as Sv2Connector<AnyMessage<'static>>>::connect(
@@ -527,8 +526,8 @@ async fn iroh_admission_whitelist_rejects_unknown_node_id() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
     // (a) Pure handle check: admits only the configured NodeId.
-    let allowed = SecretKey::generate(rand::rngs::OsRng).public();
-    let denied = SecretKey::generate(rand::rngs::OsRng).public();
+    let allowed = SecretKey::generate().public();
+    let denied = SecretKey::generate().public();
     let mut wl = BTreeSet::new();
     wl.insert(allowed);
     let handle = AdmissionHandle::whitelist(wl);
@@ -571,7 +570,7 @@ async fn iroh_admission_whitelist_rejects_unknown_node_id() {
         Duration::from_secs(2),
     );
     let target = Sv2Target::Iroh {
-        node_addr: NodeAddr::from_parts(server_node_id, None, std::iter::once(server_socket)),
+        node_addr: EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
         authority_pubkey: Some(auth_pub),
     };
 
@@ -644,7 +643,7 @@ async fn wrong_alpn_rejected_at_quic_layer() {
     // Client dials with the WRONG alpn (JDS instead of pool).
     let client_ep = build_client_endpoint().await;
     let target_node_addr =
-        NodeAddr::from_parts(server_node_id, None, std::iter::once(server_socket));
+        EndpointAddr::new(server_node_id).with_ip_addr(server_socket);
 
     let started = Instant::now();
     let res = tokio::time::timeout(

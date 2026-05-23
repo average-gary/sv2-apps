@@ -16,16 +16,16 @@
 //!
 //! Test 2 (`translator_iroh_then_tcp_fallback`):
 //!     Translator configured with `prefer_transport = "iroh_then_tcp"` and
-//!     a NodeId that does not resolve to a reachable iroh listener (no peer
-//!     was ever started for that NodeId). The pool's TCP listener IS bound
+//!     a EndpointId that does not resolve to a reachable iroh listener (no peer
+//!     was ever started for that EndpointId). The pool's TCP listener IS bound
 //!     and reachable. The translator must successfully fall back to TCP and
 //!     complete the SV2 setup end-to-end.
 //!
 //! Test 3 (`translator_iroh_with_whitelist_admission`):
 //!     Pool admission policy is set to whitelist mode. First half of the
-//!     test: whitelist contains the translator's NodeId — translator
+//!     test: whitelist contains the translator's EndpointId — translator
 //!     connects. Second half: the pool is restarted with a whitelist that
-//!     does NOT contain the translator's NodeId — the translator's iroh
+//!     does NOT contain the translator's EndpointId — the translator's iroh
 //!     dial fails (connection cannot complete, no SV1 mining.notify ever
 //!     arrives at the SV1 sniffer in front of the translator).
 
@@ -40,7 +40,7 @@ use integration_tests_sv2::{
     },
     *,
 };
-use iroh::{NodeId, SecretKey};
+use iroh::{EndpointAddr, EndpointId, SecretKey};
 use pool_sv2::config::PoolConfig;
 use std::{
     collections::BTreeMap,
@@ -86,13 +86,13 @@ fn unique_secret_key_path(label: &str) -> PathBuf {
 }
 
 /// Persist a freshly-generated 32-byte iroh Ed25519 secret to `path` (Unix
-/// mode 0600) and return both the `SecretKey` (for deriving NodeId) and the
+/// mode 0600) and return both the `SecretKey` (for deriving EndpointId) and the
 /// path. Mirrors what `iroh::network_helpers::iroh::identity::load_or_generate`
-/// would write at runtime, but lets the test know the NodeId BEFORE the role
+/// would write at runtime, but lets the test know the EndpointId BEFORE the role
 /// boots — required because the translator's `[[upstreams]]` entry must
-/// carry the pool's NodeId at config-build time.
+/// carry the pool's EndpointId at config-build time.
 fn generate_and_persist_secret_key(path: &Path) -> SecretKey {
-    let secret = SecretKey::generate(rand::rngs::OsRng);
+    let secret = SecretKey::generate();
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).expect("create parent dir for iroh secret key");
@@ -186,15 +186,15 @@ async fn start_pool_with_iroh(
 /// `connection_overrides` map. Because the test fixture disables every
 /// discovery mechanism (relay, pkarr, DHT, n0), the only way the translator's
 /// iroh connector can find the pool's listener is via an explicit override
-/// keyed by the pool's NodeId. Populate this with `(pool_node_id, pool iroh
+/// keyed by the pool's EndpointId. Populate this with `(pool_node_id, pool iroh
 /// listen socket)` for the happy-path tests; leave empty when you want a dial
 /// to fail (no addressing information available).
 async fn start_translator_iroh(
     upstream_tcp_address: SocketAddr,
-    pool_node_id: NodeId,
+    pool_node_id: EndpointId,
     mut translator_iroh_cfg: IrohRoleConfig,
     prefer_transport: PreferTransport,
-    connection_overrides: BTreeMap<NodeId, SocketAddr>,
+    connection_overrides: BTreeMap<EndpointId, SocketAddr>,
 ) -> (TranslatorSv2, SocketAddr) {
     // Stamp connection_overrides into the iroh config's discovery section.
     // Mirrors the role-config TOML's `[iroh.connection_overrides]` table
@@ -262,13 +262,10 @@ async fn start_translator_iroh(
 /// Probe the pool's iroh listener until a client can dial it. Builds a
 /// throwaway `iroh::Endpoint` for the probe and tears it down before
 /// returning.
-async fn wait_for_pool_iroh(pool_node_id: NodeId, pool_iroh_addr: SocketAddr) {
+async fn wait_for_pool_iroh(pool_node_id: EndpointId, pool_iroh_addr: SocketAddr) {
     let (probe_endpoint, _probe_addr) = utils::create_iroh_endpoint(SV2_POOL_ALPN).await;
-    let pool_node_addr = iroh::NodeAddr::from_parts(
-        pool_node_id,
-        None,
-        std::iter::once(SocketAddr::from(([127, 0, 0, 1], pool_iroh_addr.port()))),
-    );
+    let pool_node_addr = EndpointAddr::new(pool_node_id)
+        .with_ip_addr(SocketAddr::from(([127, 0, 0, 1], pool_iroh_addr.port())));
     wait_for_iroh_client(
         &probe_endpoint,
         pool_node_addr,
@@ -291,7 +288,7 @@ async fn translator_dials_pool_over_iroh_with_sv1_downstream_unchanged() {
 
     let (_tp, tp_addr) = start_template_provider(None, DifficultyLevel::Low);
 
-    // ---- Pool iroh secret key + NodeId (pre-known so translator can dial it).
+    // ---- Pool iroh secret key + EndpointId (pre-known so translator can dial it).
     let pool_secret_path = unique_secret_key_path("pool-happy");
     let pool_secret = generate_and_persist_secret_key(&pool_secret_path);
     let pool_node_id = pool_secret.public();
@@ -324,9 +321,9 @@ async fn translator_dials_pool_over_iroh_with_sv1_downstream_unchanged() {
     // — there is no implicit fallback to TCP here.)
     let unbound = unbound_tcp_address();
 
-    // Seed the translator's iroh connector with the pool's NodeId → loopback
+    // Seed the translator's iroh connector with the pool's EndpointId → loopback
     // socket. With every discovery mechanism off, this override is the only
-    // way the connector can resolve the pool's NodeId to a dialable address.
+    // way the connector can resolve the pool's EndpointId to a dialable address.
     let mut overrides = BTreeMap::new();
     overrides.insert(pool_node_id, pool_iroh_listen);
 
@@ -373,7 +370,7 @@ async fn translator_dials_pool_over_iroh_with_sv1_downstream_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 — `iroh_then_tcp` fallback: unreachable NodeId, TCP succeeds.
+// Test 2 — `iroh_then_tcp` fallback: unreachable EndpointId, TCP succeeds.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -383,20 +380,20 @@ async fn translator_iroh_then_tcp_fallback() {
     let (_tp, tp_addr) = start_template_provider(None, DifficultyLevel::Low);
 
     // Pool: TCP listener bound and reachable. No iroh listener at all — so a
-    // dial to any iroh NodeId targeting this pool's UDP-side will never
+    // dial to any iroh EndpointId targeting this pool's UDP-side will never
     // succeed.
     let (pool, pool_tcp_addr, _) =
         start_pool(sv2_tp_config(tp_addr), vec![], vec![], false).await;
 
-    // Generate a NodeId that has never been bound to a real iroh listener.
-    // The translator's iroh dial against this NodeId must fail (no peer to
+    // Generate a EndpointId that has never been bound to a real iroh listener.
+    // The translator's iroh dial against this EndpointId must fail (no peer to
     // connect to), and the `iroh_then_tcp` ordering must fall back to TCP.
-    let unreachable_secret = SecretKey::generate(rand::rngs::OsRng);
+    let unreachable_secret = SecretKey::generate();
     let unreachable_node_id = unreachable_secret.public();
 
     // Translator iroh endpoint (its outbound dialer side). Discovery is
     // disabled in `iroh_role_config_for_test`, so dialing the unreachable
-    // NodeId can only resolve via direct addresses — and there are none —
+    // EndpointId can only resolve via direct addresses — and there are none —
     // forcing a fast fail.
     let translator_secret_path = unique_secret_key_path("translator-fallback");
     let _ = generate_and_persist_secret_key(&translator_secret_path);
@@ -406,7 +403,7 @@ async fn translator_iroh_then_tcp_fallback() {
         AdmissionTestConfig::Open,
     );
 
-    // No connection_overrides for the unreachable NodeId — the iroh leg has
+    // No connection_overrides for the unreachable EndpointId — the iroh leg has
     // no addressing information, so the translator's iroh dial will fail
     // immediately ("No addressing information available") and the
     // `iroh_then_tcp` ordering must move on to TCP.
@@ -436,14 +433,14 @@ async fn translator_iroh_then_tcp_fallback() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 — Whitelist admission: allow / deny by NodeId.
+// Test 3 — Whitelist admission: allow / deny by EndpointId.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn translator_iroh_with_whitelist_admission() {
     start_tracing();
 
-    // ---- Sub-test A: pool whitelist contains translator NodeId — connect succeeds.
+    // ---- Sub-test A: pool whitelist contains translator EndpointId — connect succeeds.
     {
         let (_tp, tp_addr) = start_template_provider(None, DifficultyLevel::Low);
 
@@ -496,7 +493,7 @@ async fn translator_iroh_with_whitelist_admission() {
         let _ = std::fs::remove_file(&translator_secret_path);
     }
 
-    // ---- Sub-test B: pool whitelist does NOT contain translator NodeId —
+    // ---- Sub-test B: pool whitelist does NOT contain translator EndpointId —
     // connect fails. Assert no SV1 mining.notify arrives within a generous
     // timeout (short enough to keep the whole test under 60s).
     {
@@ -508,8 +505,8 @@ async fn translator_iroh_with_whitelist_admission() {
 
         let translator_secret_path = unique_secret_key_path("translator-wl-deny");
         let _ = generate_and_persist_secret_key(&translator_secret_path);
-        // Whitelist a stranger NodeId that is NOT the translator's.
-        let stranger = SecretKey::generate(rand::rngs::OsRng).public();
+        // Whitelist a stranger EndpointId that is NOT the translator's.
+        let stranger = SecretKey::generate().public();
 
         let pool_iroh_listen = get_available_address();
         let pool_iroh_cfg = iroh_role_config_for_test(
@@ -560,7 +557,7 @@ async fn translator_iroh_with_whitelist_admission() {
         let res = tokio::time::timeout(timeout, probe).await;
         assert!(
             res.is_err(),
-            "translator should not have received mining.notify when pool whitelist denies its NodeId"
+            "translator should not have received mining.notify when pool whitelist denies its EndpointId"
         );
 
         shutdown_all!(translator, pool);

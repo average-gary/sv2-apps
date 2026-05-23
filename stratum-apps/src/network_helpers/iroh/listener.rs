@@ -5,7 +5,7 @@
 //!
 //! 1. `endpoint.accept()` yields the next QUIC handshake attempt.
 //! 2. Awaiting the `Connecting` produces an [`iroh::endpoint::Connection`].
-//! 3. We extract the remote NodeId from the peer certificate.
+//! 3. We extract the remote EndpointId from the peer certificate.
 //! 4. **Admission check.** No SV2 bytes flow before this. Denials close the
 //!    QUIC connection with a clear reason.
 //! 5. ALPN check. iroh enforces ALPN at the QUIC layer for any ALPN
@@ -159,18 +159,11 @@ where
                 Error::IrohAccept(format!("quic handshake: {e}"))
             })?;
 
-            // Step 3: derive remote NodeId. iroh extracts this from the peer
-            // TLS certificate; failure is rare in 0.91 because the only TLS
-            // shape that gets here is iroh's own RPK profile.
-            let node_id = connection.remote_node_id().map_err(|e| {
-                #[cfg(feature = "iroh-transport-monitoring")]
-                record_connection_rejected(
-                    self.role,
-                    Direction::Inbound,
-                    RejectReason::QuicFailed,
-                );
-                Error::IrohUnknownPeer(format!("{e}"))
-            })?;
+            // Step 3: derive remote EndpointId. iroh extracts this from the peer
+            // TLS certificate. In iroh 1.0-rc, `remote_id()` on a post-handshake
+            // `Connection` returns the `EndpointId` directly (no Result), since
+            // the QUIC handshake already authenticated the peer.
+            let node_id = connection.remote_id();
 
             // Step 4: admission check. Denials close with a clear reason;
             // *no SV2 bytes flow before this.*
@@ -200,40 +193,27 @@ where
             // catches the case where an endpoint is configured with
             // multiple ALPNs (see `Endpoint::builder().alpns`) and a
             // listener instance only wants its own role's ALPN.
-            match connection.alpn() {
-                Some(observed) if observed.as_slice() == self.alpn => {}
-                Some(observed) => {
-                    warn!(
-                        observed = %String::from_utf8_lossy(&observed),
-                        expected = %String::from_utf8_lossy(self.alpn),
-                        "iroh listener: ALPN mismatch; closing connection"
-                    );
-                    connection.close(VarInt::from_u32(3), b"alpn mismatch");
-                    #[cfg(feature = "iroh-transport-monitoring")]
-                    record_connection_rejected(
-                        self.role,
-                        Direction::Inbound,
-                        RejectReason::AlpnMismatch,
-                    );
-                    return Err(Error::IrohAccept(format!(
-                        "ALPN mismatch: observed={:?} expected={:?}",
-                        observed, self.alpn
-                    )));
-                }
-                None => {
-                    // Should never happen post-handshake but treat as a
-                    // mismatch rather than panicking.
-                    connection.close(VarInt::from_u32(3), b"alpn missing");
-                    #[cfg(feature = "iroh-transport-monitoring")]
-                    record_connection_rejected(
-                        self.role,
-                        Direction::Inbound,
-                        RejectReason::AlpnMismatch,
-                    );
-                    return Err(Error::IrohAccept(
-                        "post-handshake ALPN unavailable".to_string(),
-                    ));
-                }
+            //
+            // In iroh 1.0-rc, `Connection<HandshakeCompleted>::alpn()` returns
+            // `&[u8]` directly (post-handshake the ALPN is always known).
+            let observed = connection.alpn();
+            if observed != self.alpn {
+                warn!(
+                    observed = %String::from_utf8_lossy(observed),
+                    expected = %String::from_utf8_lossy(self.alpn),
+                    "iroh listener: ALPN mismatch; closing connection"
+                );
+                connection.close(VarInt::from_u32(3), b"alpn mismatch");
+                #[cfg(feature = "iroh-transport-monitoring")]
+                record_connection_rejected(
+                    self.role,
+                    Direction::Inbound,
+                    RejectReason::AlpnMismatch,
+                );
+                return Err(Error::IrohAccept(format!(
+                    "ALPN mismatch: observed={:?} expected={:?}",
+                    observed, self.alpn
+                )));
             }
 
             // Step 6: accept the bidi stream the initiator will open.
@@ -300,7 +280,7 @@ where
 
         // PeerIdentity: Noise NX is server-only auth; the client doesn't
         // present an authority pubkey to us. Surface only the QUIC-layer
-        // NodeId.
+        // EndpointId.
         let peer = PeerIdentity {
             authority_pubkey: None,
             iroh_node_id: Some(node_id),
@@ -380,16 +360,17 @@ mod tests {
 
     /// Build a loopback iroh server endpoint, no relay, no discovery,
     /// accepting `SV2_POOL_ALPN`.
-    async fn build_server_endpoint() -> (iroh::Endpoint, iroh::NodeId, SocketAddr) {
-        use ::iroh::{Endpoint, RelayMode, SecretKey};
+    async fn build_server_endpoint() -> (iroh::Endpoint, iroh::EndpointId, SocketAddr) {
+        use ::iroh::{endpoint::presets, Endpoint, RelayMode, SecretKey};
 
-        let secret = SecretKey::generate(rand::rngs::OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
-        let ep = Endpoint::builder()
+        let ep = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .alpns(vec![SV2_POOL_ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind server endpoint");
@@ -405,23 +386,24 @@ mod tests {
     }
 
     /// Build a loopback iroh client endpoint, no relay, no discovery.
-    /// Returns the endpoint and its NodeId.
-    async fn build_client_endpoint() -> (iroh::Endpoint, iroh::NodeId) {
-        use ::iroh::{Endpoint, RelayMode, SecretKey};
+    /// Returns the endpoint and its EndpointId.
+    async fn build_client_endpoint() -> (iroh::Endpoint, iroh::EndpointId) {
+        use ::iroh::{endpoint::presets, Endpoint, RelayMode, SecretKey};
 
-        let secret = SecretKey::generate(rand::rngs::OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
-        let ep = Endpoint::builder()
+        let ep = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind client endpoint");
         (ep, node_id)
     }
 
-    /// Whitelist mode: a known NodeId is admitted and a frame round-trips.
+    /// Whitelist mode: a known EndpointId is admitted and a frame round-trips.
     #[tokio::test]
     async fn listener_admits_known_node_id() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
@@ -463,11 +445,7 @@ mod tests {
             Duration::from_secs(10),
         );
         let target = Sv2Target::Iroh {
-            node_addr: iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(server_socket),
-            ),
+            node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
             authority_pubkey: Some(auth_pub),
         };
         let (rx, tx) =
@@ -485,7 +463,7 @@ mod tests {
         server_task.await.expect("server task");
     }
 
-    /// Whitelist mode: an unknown NodeId is rejected and the dialer's
+    /// Whitelist mode: an unknown EndpointId is rejected and the dialer's
     /// follow-on traffic fails because the QUIC connection was closed
     /// before any SV2 bytes flowed.
     #[tokio::test]
@@ -497,7 +475,7 @@ mod tests {
         let (client_ep, _client_node_id) = build_client_endpoint().await;
 
         // Whitelist some OTHER node id; the real client is not on the list.
-        let other = ::iroh::SecretKey::generate(rand::rngs::OsRng).public();
+        let other = ::iroh::SecretKey::generate().public();
         let mut allowed = BTreeSet::new();
         allowed.insert(other);
         let admission = AdmissionHandle::whitelist(allowed);
@@ -526,7 +504,7 @@ mod tests {
             match res {
                 Err(Error::IrohAdmissionDenied) => {}
                 Err(Error::IrohAccept(_)) | Err(Error::IrohRequestTimeout) => {}
-                Ok(_) => panic!("listener must NOT admit unknown NodeId"),
+                Ok(_) => panic!("listener must NOT admit unknown EndpointId"),
                 Err(other) => panic!("unexpected error: {other:?}"),
             }
         });
@@ -542,11 +520,7 @@ mod tests {
             Duration::from_secs(2),
         );
         let target = Sv2Target::Iroh {
-            node_addr: iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(server_socket),
-            ),
+            node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
             authority_pubkey: Some(auth_pub),
         };
         let res = <IrohSv2Connector as Sv2Connector<AnyMessage<'static>>>::connect(
@@ -561,7 +535,7 @@ mod tests {
         server_task.await.expect("server task");
     }
 
-    /// Open mode admits any NodeId — confirm two distinct dialers both
+    /// Open mode admits any EndpointId — confirm two distinct dialers both
     /// connect successfully against the same listener (sequentially).
     #[tokio::test]
     async fn listener_open_admits_all() {
@@ -581,7 +555,7 @@ mod tests {
         );
 
         // Run twice: each iteration uses a fresh client endpoint with a
-        // fresh NodeId.
+        // fresh EndpointId.
         for i in 0..2 {
             let (client_ep, _client_node_id) = build_client_endpoint().await;
             let server_handle = {
@@ -605,11 +579,7 @@ mod tests {
                 Duration::from_secs(10),
             );
             let target = Sv2Target::Iroh {
-                node_addr: iroh::NodeAddr::from_parts(
-                    server_node_id,
-                    None,
-                    std::iter::once(server_socket),
-                ),
+                node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
                 authority_pubkey: Some(auth_pub),
             };
 
@@ -688,11 +658,7 @@ mod tests {
             Duration::from_secs(10),
         );
         let target_1 = Sv2Target::Iroh {
-            node_addr: iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(server_socket),
-            ),
+            node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
             authority_pubkey: Some(auth_pub),
         };
         let (rx_1, tx_1) =
@@ -709,8 +675,8 @@ mod tests {
         assert_eq!(extract_payload(&mut got), expected);
 
         // Mutate whitelist to exclude any future dialer (we set a list with
-        // some random NodeId that doesn't match our second client).
-        let stranger = ::iroh::SecretKey::generate(rand::rngs::OsRng).public();
+        // some random EndpointId that doesn't match our second client).
+        let stranger = ::iroh::SecretKey::generate().public();
         let mut wl = BTreeSet::new();
         wl.insert(stranger);
         admission.set_policy(crate::network_helpers::iroh::admission::AdmissionPolicy::Whitelist(wl));
@@ -737,7 +703,7 @@ mod tests {
             match res {
                 Err(Error::IrohAdmissionDenied) => {}
                 Err(Error::IrohAccept(_)) | Err(Error::IrohRequestTimeout) => {}
-                Ok(_) => panic!("listener must NOT admit non-whitelisted NodeId"),
+                Ok(_) => panic!("listener must NOT admit non-whitelisted EndpointId"),
                 Err(other) => panic!("unexpected error on 2nd accept: {other:?}"),
             }
         });
@@ -749,11 +715,7 @@ mod tests {
             Duration::from_secs(5),
         );
         let target_2 = Sv2Target::Iroh {
-            node_addr: iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(server_socket),
-            ),
+            node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
             authority_pubkey: Some(auth_pub),
         };
         let res2 = <IrohSv2Connector as Sv2Connector<AnyMessage<'static>>>::connect(

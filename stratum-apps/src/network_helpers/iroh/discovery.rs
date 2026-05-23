@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use iroh::NodeId;
+use iroh::EndpointId;
 
 /// Environment variable that toggles relay-based discovery.
 pub const ENV_RELAYS_ENABLE: &str = "SV2_IROH_RELAYS_ENABLE";
@@ -64,9 +64,9 @@ pub struct DiscoveryConfig {
     /// will parse / validate the URL — we only round-trip the string here so
     /// this module stays free of any iroh URL parsing.
     pub relay_url: Option<String>,
-    /// Operator-supplied dial overrides: forces a given [`NodeId`] to be
+    /// Operator-supplied dial overrides: forces a given [`EndpointId`] to be
     /// reached at a fixed [`SocketAddr`] regardless of discovery results.
-    pub connection_overrides: BTreeMap<NodeId, SocketAddr>,
+    pub connection_overrides: BTreeMap<EndpointId, SocketAddr>,
 }
 
 impl Default for DiscoveryConfig {
@@ -125,8 +125,8 @@ pub enum DiscoveryConfigError {
         /// Human-readable reason describing what was wrong.
         reason: String,
     },
-    /// Failed to parse a [`NodeId`] from a connection-override key.
-    InvalidNodeId {
+    /// Failed to parse a [`EndpointId`] from a connection-override key.
+    InvalidEndpointId {
         /// The base32 string we tried to parse.
         value: String,
         /// The underlying parse error stringified.
@@ -151,8 +151,8 @@ impl std::fmt::Display for DiscoveryConfigError {
             DiscoveryConfigError::InvalidOverride { entry, reason } => {
                 write!(f, "invalid SV2_IROH_CONNECT_OVERRIDES entry {entry}: {reason}")
             }
-            DiscoveryConfigError::InvalidNodeId { value, source } => {
-                write!(f, "invalid NodeId {value}: {source}")
+            DiscoveryConfigError::InvalidEndpointId { value, source } => {
+                write!(f, "invalid EndpointId {value}: {source}")
             }
             DiscoveryConfigError::InvalidSocketAddr { value, source } => {
                 write!(f, "invalid SocketAddr {value}: {source}")
@@ -267,7 +267,7 @@ fn parse_bool_str(var: &'static str, raw: &str) -> Result<bool, DiscoveryConfigE
 /// Parse the TOML `connection_overrides` map into the typed runtime map.
 fn parse_overrides_map(
     map: &BTreeMap<String, String>,
-) -> Result<BTreeMap<NodeId, SocketAddr>, DiscoveryConfigError> {
+) -> Result<BTreeMap<EndpointId, SocketAddr>, DiscoveryConfigError> {
     let mut out = BTreeMap::new();
     for (k, v) in map {
         let node_id = parse_node_id(k)?;
@@ -283,7 +283,7 @@ fn parse_overrides_map(
 /// entries (and around `=`) is tolerated. An empty string yields an empty
 /// map; trailing commas are tolerated. Duplicate node IDs are tolerated and
 /// last-write-wins, matching `BTreeMap::insert` behavior.
-fn parse_overrides_env(raw: &str) -> Result<BTreeMap<NodeId, SocketAddr>, DiscoveryConfigError> {
+fn parse_overrides_env(raw: &str) -> Result<BTreeMap<EndpointId, SocketAddr>, DiscoveryConfigError> {
     let mut out = BTreeMap::new();
     for entry in raw.split(',') {
         let entry = entry.trim();
@@ -311,8 +311,8 @@ fn parse_overrides_env(raw: &str) -> Result<BTreeMap<NodeId, SocketAddr>, Discov
     Ok(out)
 }
 
-fn parse_node_id(s: &str) -> Result<NodeId, DiscoveryConfigError> {
-    NodeId::from_str(s).map_err(|e| DiscoveryConfigError::InvalidNodeId {
+fn parse_node_id(s: &str) -> Result<EndpointId, DiscoveryConfigError> {
+    EndpointId::from_str(s).map_err(|e| DiscoveryConfigError::InvalidEndpointId {
         value: s.to_string(),
         source: e.to_string(),
     })
@@ -390,27 +390,27 @@ mod tests {
         ]
     }
 
-    /// Derive a deterministic [`NodeId`] from a 32-byte seed. Used to build
+    /// Derive a deterministic [`EndpointId`] from a 32-byte seed. Used to build
     /// test fixtures without committing a base32 string that depends on the
     /// exact iroh-base display alphabet. `seed = [1; 32]` and `[2; 32]` give
-    /// us two distinct, stable NodeIds for env-override tests.
-    fn node_id_from_seed(seed: [u8; 32]) -> (NodeId, String) {
+    /// us two distinct, stable EndpointIds for env-override tests.
+    fn node_id_from_seed(seed: [u8; 32]) -> (EndpointId, String) {
         let secret = iroh::SecretKey::from_bytes(&seed);
         let pk = secret.public();
         let s = pk.to_string();
         // Sanity-check: round-trip through the parser we'll exercise in
         // production. If this ever fails, the fixture itself is broken
         // (not the code under test).
-        let parsed = NodeId::from_str(&s).expect("derived NodeId must round-trip");
+        let parsed = EndpointId::from_str(&s).expect("derived EndpointId must round-trip");
         assert_eq!(parsed, pk);
         (pk, s)
     }
 
-    fn sample_node_id_a() -> (NodeId, String) {
+    fn sample_node_id_a() -> (EndpointId, String) {
         node_id_from_seed([1u8; 32])
     }
 
-    fn sample_node_id_b() -> (NodeId, String) {
+    fn sample_node_id_b() -> (EndpointId, String) {
         node_id_from_seed([2u8; 32])
     }
 
@@ -611,7 +611,7 @@ mod tests {
         );
     }
 
-    // Bonus: bad NodeId in env override surfaces InvalidNodeId.
+    // Bonus: bad EndpointId in env override surfaces InvalidEndpointId.
     #[test]
     fn invalid_node_id_in_env_overrides() {
         let _g = env_lock();
@@ -619,8 +619,8 @@ mod tests {
         let _g_o = EnvGuard::set(ENV_CONNECT_OVERRIDES, "not-a-node-id=192.0.2.5:34256");
         let err = DiscoveryConfig::resolve(DiscoveryConfigToml::default()).unwrap_err();
         assert!(
-            matches!(err, DiscoveryConfigError::InvalidNodeId { .. }),
-            "expected InvalidNodeId, got {err:?}"
+            matches!(err, DiscoveryConfigError::InvalidEndpointId { .. }),
+            "expected InvalidEndpointId, got {err:?}"
         );
     }
 

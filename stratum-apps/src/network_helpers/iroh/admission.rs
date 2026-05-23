@@ -1,14 +1,14 @@
 //! Admission policy for the iroh listener.
 //!
-//! Open by default; optional runtime-updateable whitelist of NodeIds. Used
-//! by `IrohSv2Listener` (Wave 3) to decide whether a peer's NodeId is allowed
+//! Open by default; optional runtime-updateable whitelist of EndpointIds. Used
+//! by `IrohSv2Listener` (Wave 3) to decide whether a peer's EndpointId is allowed
 //! to even attempt the SV2 Noise handshake.
 //!
 //! See plan §"Two-layer identity model" for context. The admission check is
 //! the QUIC-layer rejection that runs BEFORE any SV2 bytes flow:
 //!
 //! 1. iroh QUIC handshake completes; `connection.remote_node_id()` yields a
-//!    [`NodeId`].
+//!    [`EndpointId`].
 //! 2. [`AdmissionHandle::admits`] decides QUIC-layer admission. If denied,
 //!    the connection is closed without any SV2 bytes being sent.
 //! 3. Only then is the SV2 Noise NX handshake run inside the bidi stream.
@@ -18,22 +18,22 @@
 //! updates is avoided.
 
 use arc_swap::ArcSwap;
-use iroh::NodeId;
+use iroh::EndpointId;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// Admission decision for a peer NodeId observed at QUIC accept time.
+/// Admission decision for a peer EndpointId observed at QUIC accept time.
 #[derive(Debug, Clone)]
 pub enum AdmissionPolicy {
-    /// Admit any NodeId. The default, suitable for low-friction mining.
+    /// Admit any EndpointId. The default, suitable for low-friction mining.
     Open,
-    /// Admit only NodeIds in the contained set. Empty set admits nothing.
-    Whitelist(BTreeSet<NodeId>),
+    /// Admit only EndpointIds in the contained set. Empty set admits nothing.
+    Whitelist(BTreeSet<EndpointId>),
 }
 
 impl AdmissionPolicy {
     /// Returns whether this policy admits the given `node_id`.
-    fn admits(&self, node_id: &NodeId) -> bool {
+    fn admits(&self, node_id: &EndpointId) -> bool {
         match self {
             AdmissionPolicy::Open => true,
             AdmissionPolicy::Whitelist(set) => set.contains(node_id),
@@ -62,7 +62,7 @@ impl AdmissionHandle {
 
     /// Creates a handle initialized to [`AdmissionPolicy::Whitelist`] with
     /// the given starting set.
-    pub fn whitelist(initial: BTreeSet<NodeId>) -> Self {
+    pub fn whitelist(initial: BTreeSet<EndpointId>) -> Self {
         Self {
             inner: Arc::new(ArcSwap::new(Arc::new(AdmissionPolicy::Whitelist(
                 initial,
@@ -78,17 +78,17 @@ impl AdmissionHandle {
         self.inner.store(Arc::new(policy));
     }
 
-    /// Adds a NodeId to the whitelist.
+    /// Adds a EndpointId to the whitelist.
     ///
     /// **Semantic transition:** if the current policy is
     /// [`AdmissionPolicy::Open`], this call promotes it to
     /// [`AdmissionPolicy::Whitelist`] containing exactly `node_id`. After
-    /// this point, all NodeIds other than `node_id` are rejected until the
+    /// this point, all EndpointIds other than `node_id` are rejected until the
     /// caller adds them or restores [`AdmissionPolicy::Open`] via
     /// [`set_policy`](Self::set_policy). This is intentional — adding to a
     /// whitelist that does not exist yet must mean "lock it down to this
     /// peer", otherwise the call would be a no-op.
-    pub fn add(&self, node_id: NodeId) {
+    pub fn add(&self, node_id: EndpointId) {
         // rcu retries on concurrent writers; reads inside the closure are
         // cheap clones of the current policy.
         self.inner.rcu(|current| {
@@ -101,12 +101,12 @@ impl AdmissionHandle {
         });
     }
 
-    /// Removes a NodeId from the whitelist.
+    /// Removes a EndpointId from the whitelist.
     ///
     /// No-op if the current policy is [`AdmissionPolicy::Open`] or the
     /// `node_id` is not present. Removing the last entry leaves an empty
     /// whitelist (which admits nothing).
-    pub fn remove(&self, node_id: &NodeId) {
+    pub fn remove(&self, node_id: &EndpointId) {
         self.inner.rcu(|current| match current.as_ref() {
             AdmissionPolicy::Open => current.clone(),
             AdmissionPolicy::Whitelist(s) => {
@@ -121,7 +121,7 @@ impl AdmissionHandle {
     }
 
     /// O(1) admission check used on every accept. Lock-free read.
-    pub fn admits(&self, node_id: &NodeId) -> bool {
+    pub fn admits(&self, node_id: &EndpointId) -> bool {
         self.inner.load().admits(node_id)
     }
 
@@ -147,18 +147,18 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc as StdArc;
 
-    /// Generate a random NodeId by deriving from a freshly-generated Ed25519
+    /// Generate a random EndpointId by deriving from a freshly-generated Ed25519
     /// secret key. Mirrors the pattern used in
     /// `noise_generic_stream::tests::iroh_endpoint_pair_roundtrip`.
-    fn random_node_id() -> NodeId {
-        SecretKey::generate(rand::rngs::OsRng).public()
+    fn random_node_id() -> EndpointId {
+        SecretKey::generate().public()
     }
 
-    /// Deterministic NodeId from a 32-byte seed; useful when a test needs a
+    /// Deterministic EndpointId from a 32-byte seed; useful when a test needs a
     /// stable id for clarity, but unwraps because `from_bytes` rejects the
     /// all-zero / non-canonical Ed25519 points and we only feed it sane bytes.
-    fn deterministic_node_id(seed: u8) -> NodeId {
-        // Use SecretKey rather than NodeId::from_bytes directly so we always
+    fn deterministic_node_id(seed: u8) -> EndpointId {
+        // Use SecretKey rather than EndpointId::from_bytes directly so we always
         // get a canonical Ed25519 public point.
         let bytes = [seed.wrapping_add(1); 32];
         SecretKey::from_bytes(&bytes).public()
@@ -169,8 +169,8 @@ mod tests {
         let handle = AdmissionHandle::open();
         let a = random_node_id();
         let b = random_node_id();
-        assert!(handle.admits(&a), "open policy must admit any NodeId");
-        assert!(handle.admits(&b), "open policy must admit any NodeId");
+        assert!(handle.admits(&a), "open policy must admit any EndpointId");
+        assert!(handle.admits(&b), "open policy must admit any EndpointId");
         assert!(matches!(handle.snapshot(), AdmissionPolicy::Open));
     }
 
@@ -183,10 +183,10 @@ mod tests {
         set.insert(allowed);
         let handle = AdmissionHandle::whitelist(set);
 
-        assert!(handle.admits(&allowed), "listed NodeId must be admitted");
+        assert!(handle.admits(&allowed), "listed EndpointId must be admitted");
         assert!(
             !handle.admits(&denied),
-            "unlisted NodeId must be rejected"
+            "unlisted EndpointId must be rejected"
         );
     }
 
@@ -203,10 +203,10 @@ mod tests {
 
         // After add, only `id` is admitted — Open has been promoted to
         // Whitelist({id}).
-        assert!(handle.admits(&id), "added NodeId must be admitted");
+        assert!(handle.admits(&id), "added EndpointId must be admitted");
         assert!(
             !handle.admits(&other),
-            "non-added NodeId must NOT be admitted after Open->Whitelist promotion"
+            "non-added EndpointId must NOT be admitted after Open->Whitelist promotion"
         );
         match handle.snapshot() {
             AdmissionPolicy::Whitelist(set) => {
@@ -266,7 +266,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_reads_during_writes() {
-        // Two distinct NodeIds the writer toggles between. We seed the
+        // Two distinct EndpointIds the writer toggles between. We seed the
         // handle as a whitelist containing one of them so every read sees a
         // valid snapshot (either {a}, {a,b}, or {b} — all consistent).
         let a = deterministic_node_id(0x11);
@@ -279,7 +279,7 @@ mod tests {
         let stop = StdArc::new(AtomicBool::new(false));
 
         // Spawn 8 reader tasks, each issuing 10k admits() calls against
-        // both NodeIds.
+        // both EndpointIds.
         let mut readers = Vec::with_capacity(8);
         for _ in 0..8 {
             let h = handle.clone();
@@ -301,7 +301,7 @@ mod tests {
             }));
         }
 
-        // Writer: 100 iterations of add/remove between the two NodeIds.
+        // Writer: 100 iterations of add/remove between the two EndpointIds.
         // Run on this task so we don't have to worry about ordering with
         // the reader spawn.
         let writer_handle = handle.clone();

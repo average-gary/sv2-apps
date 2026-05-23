@@ -442,13 +442,13 @@ async fn build_target(
 
     #[cfg(feature = "iroh-transport")]
     {
-        use stratum_apps::network_helpers::iroh::{NodeAddr, NodeId, RelayUrl};
+        use stratum_apps::network_helpers::iroh::{EndpointAddr, EndpointId, RelayUrl};
         use stratum_apps::network_helpers::transport::PreferTransport;
 
         if let Some(ext) = iroh_tp_ext {
             // Resolve iroh leg only if a non-empty NodeId is supplied.
-            let iroh_leg: Option<NodeAddr> = match ext.iroh_node_id.as_deref() {
-                Some(s) if !s.is_empty() => match s.parse::<NodeId>() {
+            let iroh_leg: Option<EndpointAddr> = match ext.iroh_node_id.as_deref() {
+                Some(s) if !s.is_empty() => match s.parse::<EndpointId>() {
                     Ok(node_id) => {
                         let relay = ext
                             .iroh_relay_url
@@ -466,7 +466,11 @@ async fn build_target(
                                     None
                                 }
                             });
-                        Some(NodeAddr::from_parts(node_id, relay, std::iter::empty()))
+                        let mut addr = EndpointAddr::new(node_id);
+                        if let Some(relay) = relay {
+                            addr = addr.with_relay_url(relay);
+                        }
+                        Some(addr)
                     }
                     Err(e) => {
                         warn!(

@@ -45,7 +45,7 @@ num-format = "0.4"
 # fixtures in `lib/utils.rs` and the iroh mocks in `lib/mock_roles.rs`.
 # `default-features = false` mirrors the way every other crate in this
 # workspace pulls iroh in (see e.g. `stratum-apps/Cargo.toml`).
-iroh = { version = "0.91", default-features = false, optional = true }
+iroh = { version = "1.0.0-rc.0", default-features = false, features = ["tls-ring"], optional = true }
 
 [features]
 # When this feature is on, the integration-tests lib gains the iroh fixture

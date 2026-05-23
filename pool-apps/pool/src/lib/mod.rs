@@ -199,7 +199,7 @@ impl PoolSv2 {
                     error!(error = ?e, "Failed to build iroh endpoint");
                     PoolErrorKind::Io(std::io::Error::other(e.to_string()))
                 })?;
-                info!(node_id = %endpoint.node_id(), "Iroh Endpoint ready");
+                info!(endpoint_id = %endpoint.id(), "Iroh Endpoint ready");
                 Some((endpoint, resolved))
             }
             None => None,

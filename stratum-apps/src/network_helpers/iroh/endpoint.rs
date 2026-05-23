@@ -22,11 +22,11 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use iroh::{
-    discovery::{
-        dns::DnsDiscovery,
+    address_lookup::{
+        dns::DnsAddressLookup,
         pkarr::{PkarrPublisher, PkarrResolver},
     },
-    endpoint::TransportConfig,
+    endpoint::{presets, QuicTransportConfig},
     Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey,
 };
 
@@ -183,17 +183,13 @@ pub async fn build_endpoint_with_key(
     // ----- Build the QUIC transport config -------------------------------------
     //
     // Plan §"Mandatory operational primitives" lists explicit QUIC keepalive
-    // as non-optional. iroh 0.91 does NOT re-export `quinn::IdleTimeout`
-    // through its public `iroh::endpoint` module, so we cannot name the type.
-    // We sidestep that by relying on the function parameter's type to drive
-    // inference: `TransportConfig::max_idle_timeout` takes
-    // `Option<IdleTimeout>`, so the `try_into()` target is unambiguous
-    // without us needing to import the type.
+    // as non-optional. iroh 1.0-rc exposes a typed `QuicTransportConfig`
+    // builder with `max_idle_timeout(Option<IdleTimeout>)` and
+    // `keep_alive_interval(Duration)`.
     //
     // The `try_into` only fails when the duration overflows the QUIC VarInt
     // encoding (~4500 years), so this branch is effectively a programmer
     // mistake check.
-    let mut transport_config = TransportConfig::default();
     let idle_timeout = match config.max_idle_timeout.try_into() {
         Ok(t) => t,
         Err(e) => {
@@ -203,59 +199,82 @@ pub async fn build_endpoint_with_key(
             )));
         }
     };
-    transport_config.max_idle_timeout(Some(idle_timeout));
-    transport_config.keep_alive_interval(Some(config.keep_alive_interval));
+    let transport_config = QuicTransportConfig::builder()
+        .max_idle_timeout(Some(idle_timeout))
+        .keep_alive_interval(config.keep_alive_interval)
+        .build();
 
     // ----- Build the iroh Endpoint builder -------------------------------------
-    let mut builder = Endpoint::builder()
+    //
+    // iroh 1.0-rc requires the builder to be constructed with a `Preset` —
+    // a small bundle of mandatory defaults (most importantly, the rustls
+    // crypto provider). We start from `presets::Minimal`, which only sets
+    // the crypto provider, and then add address lookup services explicitly
+    // based on the per-mechanism toggles below.
+    let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret_key)
         .alpns(config.alpns.clone())
         .relay_mode(relay_mode)
         .transport_config(transport_config)
-        // Start from a clean slate so our toggles don't accidentally
-        // compound with iroh's defaults. We re-add what's enabled below.
-        .clear_discovery();
+        // Minimal doesn't add any address lookups; clear_address_lookup is a
+        // no-op here, but we call it anyway so swapping the preset later
+        // doesn't silently inherit unintended discovery.
+        .clear_address_lookup();
 
-    // ----- Per-mechanism discovery toggles -------------------------------------
+    // ----- Per-mechanism address lookup toggles --------------------------------
     //
     // Each mechanism is independently switchable per the plan. Order doesn't
-    // matter for correctness — iroh wraps multiple discovery services in a
-    // ConcurrentDiscovery internally — but we keep the order matching the
-    // plan/TOML ordering for readability.
+    // matter for correctness — iroh composes multiple address lookups
+    // internally — but we keep the order matching the plan/TOML ordering for
+    // readability.
     let d = &config.discovery;
 
     if d.n0_discovery_enable {
-        // Convenience: PkarrPublisher::n0_dns + DnsDiscovery::n0_dns. May
-        // overlap with the more granular pkarr toggles below; that's fine
-        // because iroh's `ConcurrentDiscovery` tolerates duplicates.
-        builder = builder.discovery_n0();
+        // n0 default: PkarrPublisher + DnsAddressLookup against the n0 DNS
+        // server. Adds both publishing and DNS-based resolution. May overlap
+        // with the more granular pkarr toggles below; that's fine because
+        // iroh's address lookup composition tolerates duplicates.
+        builder = builder.address_lookup(PkarrPublisher::n0_dns());
+        builder = builder.address_lookup(DnsAddressLookup::n0_dns());
     }
     if d.pkarr_publisher_enable {
-        builder = builder.add_discovery(PkarrPublisher::n0_dns());
+        builder = builder.address_lookup(PkarrPublisher::n0_dns());
     }
     if d.pkarr_resolver_enable {
-        // PkarrResolver doesn't add an n0_dns DNS resolver — that's what
-        // DnsDiscovery::n0_dns does. We also add the resolver here so a
-        // node with `n0_discovery_enable=false` but `pkarr_resolver_enable=true`
-        // still gets DNS resolution against n0's records.
-        builder = builder.add_discovery(PkarrResolver::n0_dns());
-        builder = builder.add_discovery(DnsDiscovery::n0_dns());
+        // PkarrResolver does HTTP-based pkarr lookup. We also add the n0 DNS
+        // resolver here so a node with `n0_discovery_enable=false` but
+        // `pkarr_resolver_enable=true` still gets DNS resolution against
+        // n0's records.
+        builder = builder.address_lookup(PkarrResolver::n0_dns());
+        builder = builder.address_lookup(DnsAddressLookup::n0_dns());
     }
     if d.dht_enable {
-        // Gated on the `discovery-pkarr-dht` cargo feature. That feature is
-        // enabled in stratum-apps's Cargo.toml whenever `iroh-transport` is
-        // on, so this call is always available in this build.
-        builder = builder.discovery_dht();
+        // DHT discovery moved out of the iroh main crate in 1.0-rc into
+        // `iroh-mainline-address-lookup`. We don't depend on that crate yet,
+        // so this toggle is documented as a no-op for now and emits a warn
+        // so operators see why their DHT setting is ignored. Tracked as a
+        // follow-up.
+        tracing::warn!(
+            "DHT discovery not yet supported on iroh 1.0-rc; ignoring \
+             `discovery_dht_enable=true`. To enable it, add the \
+             `iroh-mainline-address-lookup` crate as a dependency."
+        );
     }
 
     // ----- Bind on the configured UDP socket -----------------------------------
     //
-    // iroh's builder has separate `bind_addr_v4` and `bind_addr_v6` setters;
-    // pick the right one based on the configured SocketAddr family.
+    // iroh 1.0-rc collapsed `bind_addr_v4` and `bind_addr_v6` into a single
+    // `bind_addr` setter that takes any `ToSocketAddr`. The builder method
+    // returns `Result<Self, InvalidSocketAddr>` (vs. infallible in 0.91) but
+    // a fully-resolved `SocketAddr` will never trip that error.
     builder = match config.listen_address {
-        SocketAddr::V4(v4) => builder.bind_addr_v4(v4),
-        SocketAddr::V6(v6) => builder.bind_addr_v6(v6),
-    };
+        SocketAddr::V4(v4) => builder.bind_addr(v4),
+        SocketAddr::V6(v6) => builder.bind_addr(v6),
+    }
+    .map_err(|e| EndpointBuildError::Bind {
+        addr: config.listen_address,
+        source: e.to_string(),
+    })?;
 
     let endpoint = builder.bind().await.map_err(|e| EndpointBuildError::Bind {
         addr: config.listen_address,
@@ -340,7 +359,7 @@ mod tests {
         let unused_path = dir.path().join("never-created").join("iroh-secret.ed25519");
         let cfg = loopback_config(unused_path.clone());
 
-        let secret = SecretKey::generate(&mut rand::rngs::OsRng);
+        let secret = SecretKey::generate();
         let expected_node_id = secret.public();
 
         let endpoint = build_endpoint_with_key(&cfg, secret)
@@ -348,9 +367,9 @@ mod tests {
             .expect("build_endpoint_with_key");
 
         assert_eq!(
-            endpoint.node_id(),
+            endpoint.id(),
             expected_node_id,
-            "endpoint NodeId must match pre-loaded SecretKey's public key"
+            "endpoint EndpointId must match pre-loaded SecretKey's public key"
         );
         assert!(
             !unused_path.exists(),
@@ -389,12 +408,12 @@ mod tests {
             .await
             .expect("build with relay enabled + custom url");
 
-        // Sanity: distinct NodeIds (different secrets on disk).
+        // Sanity: distinct EndpointIds (different secrets on disk).
         assert_ne!(
-            ep_a.node_id(),
-            ep_b.node_id(),
+            ep_a.id(),
+            ep_b.id(),
             "two endpoints with distinct identity files should have \
-             distinct NodeIds"
+             distinct EndpointIds"
         );
 
         // Variant C: malformed relay URL must surface InvalidRelayUrl

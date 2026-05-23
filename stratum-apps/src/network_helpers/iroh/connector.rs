@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iroh::endpoint::VarInt;
-use iroh::{Endpoint, NodeAddr, NodeId};
+use iroh::{Endpoint, EndpointAddr, EndpointId};
 use stratum_core::{
     binary_sv2::{Deserialize, GetSize, Serialize},
     codec_sv2::HandshakeRole,
@@ -59,10 +59,10 @@ use crate::network_helpers::iroh::metrics::{
 /// [`iroh::Endpoint::clone`].
 pub struct IrohSv2Connector {
     endpoint: Endpoint,
-    /// Operator-supplied dial override map: forces a known [`NodeId`] to be
-    /// reached at the given [`NodeAddr`] regardless of discovery results.
+    /// Operator-supplied dial override map: forces a known [`EndpointId`] to be
+    /// reached at the given [`EndpointAddr`] regardless of discovery results.
     /// Mirrors Fedimint's `FM_IROH_CONNECT_OVERRIDES_ENV` escape hatch.
-    connection_overrides: BTreeMap<NodeId, NodeAddr>,
+    connection_overrides: BTreeMap<EndpointId, EndpointAddr>,
     /// ALPN registered on the dialer side; matches what the peer's listener
     /// has configured (one of [`crate::network_helpers::iroh::alpn`]).
     alpn: &'static [u8],
@@ -80,7 +80,7 @@ impl IrohSv2Connector {
     /// Build a new connector. See struct docs for field semantics.
     pub fn new(
         endpoint: Endpoint,
-        connection_overrides: BTreeMap<NodeId, NodeAddr>,
+        connection_overrides: BTreeMap<EndpointId, EndpointAddr>,
         alpn: &'static [u8],
         per_request_timeout: Duration,
     ) -> Self {
@@ -101,7 +101,7 @@ impl IrohSv2Connector {
     #[cfg(feature = "iroh-transport-monitoring")]
     pub fn new_with_role(
         endpoint: Endpoint,
-        connection_overrides: BTreeMap<NodeId, NodeAddr>,
+        connection_overrides: BTreeMap<EndpointId, EndpointAddr>,
         alpn: &'static [u8],
         per_request_timeout: Duration,
         role: Role,
@@ -115,10 +115,10 @@ impl IrohSv2Connector {
         }
     }
 
-    /// Resolve any operator override for `node_addr.node_id`, falling back to
+    /// Resolve any operator override for `node_addr.id`, falling back to
     /// the supplied `node_addr` when none is configured.
-    fn resolve_node_addr(&self, node_addr: &NodeAddr) -> NodeAddr {
-        if let Some(override_addr) = self.connection_overrides.get(&node_addr.node_id) {
+    fn resolve_node_addr(&self, node_addr: &EndpointAddr) -> EndpointAddr {
+        if let Some(override_addr) = self.connection_overrides.get(&node_addr.id) {
             override_addr.clone()
         } else {
             node_addr.clone()
@@ -139,7 +139,7 @@ impl IrohSv2Connector {
     /// pair via [`IrohConnection::into_channels`].
     async fn dial_iroh<M>(
         &self,
-        node_addr: &NodeAddr,
+        node_addr: &EndpointAddr,
         authority_pubkey: Option<crate::key_utils::Secp256k1PublicKey>,
     ) -> Result<ConnPair<M>, Error>
     where
@@ -167,10 +167,11 @@ impl IrohSv2Connector {
                 .map_err(|e| Error::IrohConnect(format!("{e}")))?;
 
             // 2. Capture identity before opening the bidi (so a slow open_bi
-            // doesn't strand us without a NodeId for diagnostics).
-            let node_id = connection
-                .remote_node_id()
-                .map_err(|e| Error::IrohUnknownPeer(format!("{e}")))?;
+            // doesn't strand us without a EndpointId for diagnostics). In iroh
+            // 1.0-rc, `remote_id()` on a post-handshake `Connection` returns
+            // the `EndpointId` directly (no Result), since QUIC has already
+            // authenticated the peer.
+            let node_id = connection.remote_id();
 
             // 3. Open bidi.
             let (send, recv) = connection
@@ -337,17 +338,18 @@ mod tests {
 
     /// Build a loopback iroh server endpoint, no relay, no discovery,
     /// accepting `SV2_POOL_ALPN`.
-    async fn build_server_endpoint() -> (iroh::Endpoint, iroh::NodeId, SocketAddr) {
-        use ::iroh::{Endpoint, RelayMode, SecretKey};
+    async fn build_server_endpoint() -> (iroh::Endpoint, iroh::EndpointId, SocketAddr) {
+        use ::iroh::{endpoint::presets, Endpoint, RelayMode, SecretKey};
         use std::net::SocketAddrV4;
 
-        let secret = SecretKey::generate(rand::rngs::OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
-        let ep = Endpoint::builder()
+        let ep = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .alpns(vec![SV2_POOL_ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind server endpoint");
@@ -364,13 +366,14 @@ mod tests {
 
     /// Build a loopback iroh client endpoint, no relay, no discovery.
     async fn build_client_endpoint() -> iroh::Endpoint {
-        use ::iroh::{Endpoint, RelayMode, SecretKey};
+        use ::iroh::{endpoint::presets, Endpoint, RelayMode, SecretKey};
         use std::net::SocketAddrV4;
 
-        Endpoint::builder()
-            .secret_key(SecretKey::generate(rand::rngs::OsRng))
+        Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::generate())
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind client endpoint")
@@ -421,11 +424,7 @@ mod tests {
         );
 
         let target = Sv2Target::Iroh {
-            node_addr: iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(server_socket),
-            ),
+            node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
             authority_pubkey: Some(auth_pub),
         };
         let (rx, tx) =
@@ -497,11 +496,7 @@ mod tests {
         let mut overrides = BTreeMap::new();
         overrides.insert(
             server_node_id,
-            iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(server_socket),
-            ),
+            iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
         );
 
         let client_ep = build_client_endpoint().await;
@@ -513,11 +508,7 @@ mod tests {
         );
 
         let target = Sv2Target::Iroh {
-            node_addr: iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(wrong_socket),
-            ),
+            node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(wrong_socket),
             authority_pubkey: Some(auth_pub),
         };
 
@@ -593,11 +584,7 @@ mod tests {
         );
 
         let target = Sv2Target::Iroh {
-            node_addr: iroh::NodeAddr::from_parts(
-                server_node_id,
-                None,
-                std::iter::once(server_socket),
-            ),
+            node_addr: iroh::EndpointAddr::new(server_node_id).with_ip_addr(server_socket),
             authority_pubkey: None,
         };
 

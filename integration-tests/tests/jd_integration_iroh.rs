@@ -77,9 +77,9 @@ const JDC_COINBASE_DESCRIPTOR: &str = "addr(tb1qpusf5256yxv50qt0pm0tue8k952fsu5l
 /// safe to hand to `IrohRoleConfig::secret_key_path` for both ends of the
 /// connection — when both sides load the same file they share the same
 /// `NodeId`.
-fn persist_test_secret_key() -> (PathBuf, iroh::NodeId) {
+fn persist_test_secret_key() -> (PathBuf, iroh::EndpointId) {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let secret = iroh::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret = iroh::SecretKey::generate();
     let node_id = secret.public();
     let nonce = COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
@@ -135,7 +135,7 @@ fn iroh_role_config_for_jds(
 fn iroh_role_config_for_jdc_outbound(
     connection_overrides: Option<BTreeMap<String, String>>,
 ) -> IrohRoleConfig {
-    let secret = iroh::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret = iroh::SecretKey::generate();
     let pid = std::process::id();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -343,11 +343,7 @@ async fn jdc_dials_jds_over_iroh_and_completes_job_declaration() {
     //    succeeds once the listener has actually bound and registered the
     //    `sv2/jds/0` ALPN.
     let (probe_endpoint, _probe_node_addr) = create_iroh_endpoint(SV2_JDS_ALPN).await;
-    let jds_node_addr = iroh::NodeAddr::from_parts(
-        jds_node_id,
-        None,
-        std::iter::once(jds_iroh_listen),
-    );
+    let jds_node_addr = iroh::EndpointAddr::new(jds_node_id).with_ip_addr(jds_iroh_listen);
     wait_for_iroh_client(
         &probe_endpoint,
         jds_node_addr,
@@ -450,7 +446,7 @@ async fn jdc_iroh_then_tcp_falls_back_when_iroh_node_unreachable() {
         start_pool_with_jds(tp.bitcoin_core(), vec![], vec![], false).await;
 
     // A NodeId belonging to a key we generated locally and never bound.
-    let unreachable_secret = iroh::SecretKey::generate(&mut rand::rngs::OsRng);
+    let unreachable_secret = iroh::SecretKey::generate();
     let unreachable_node_id = unreachable_secret.public();
 
     // Set a bogus direct address for the connection override so the iroh

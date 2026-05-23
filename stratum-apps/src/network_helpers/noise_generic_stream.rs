@@ -453,19 +453,20 @@ mod tests {
     #[tokio::test]
     async fn iroh_endpoint_pair_roundtrip() {
         use crate::network_helpers::iroh::{alpn::SV2_POOL_ALPN, duplex::IrohDuplex};
-        use ::iroh::{Endpoint, NodeAddr, RelayMode, SecretKey};
+        use ::iroh::{endpoint::presets, Endpoint, EndpointAddr, RelayMode, SecretKey};
         use std::net::{Ipv4Addr, SocketAddrV4};
 
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
         // --- build the server endpoint ---
-        let server_secret = SecretKey::generate(rand::rngs::OsRng);
+        let server_secret = SecretKey::generate();
         let server_node_id = server_secret.public();
-        let server = Endpoint::builder()
+        let server = Endpoint::builder(presets::Minimal)
             .secret_key(server_secret)
             .alpns(vec![SV2_POOL_ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind server endpoint");
@@ -481,11 +482,12 @@ mod tests {
         };
 
         // --- build the client endpoint ---
-        let client_secret = SecretKey::generate(rand::rngs::OsRng);
-        let client = Endpoint::builder()
+        let client_secret = SecretKey::generate();
+        let client = Endpoint::builder(presets::Minimal)
             .secret_key(client_secret)
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind client endpoint");
@@ -512,8 +514,7 @@ mod tests {
         });
 
         // --- client side: dial, run Noise initiator, send one frame ---
-        let server_addr =
-            NodeAddr::from_parts(server_node_id, None, std::iter::once(server_socket));
+        let server_addr = EndpointAddr::new(server_node_id).with_ip_addr(server_socket);
         let connection = client
             .connect(server_addr, SV2_POOL_ALPN)
             .await

@@ -44,6 +44,6 @@ pub use config::{
 
 // Re-export the most commonly used iroh public types so role apps that depend
 // on stratum-apps (with `iroh-transport` enabled) do not need to take a direct
-// `iroh = "..."` dependency just to name an `Endpoint` or `NodeId`. Only the
+// `iroh = "..."` dependency just to name an `Endpoint` or `EndpointId`. Only the
 // types actually crossed at the role/library boundary are surfaced here.
-pub use ::iroh::{Endpoint, NodeAddr, NodeId, RelayUrl};
+pub use ::iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl};

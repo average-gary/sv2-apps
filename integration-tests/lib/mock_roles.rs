@@ -450,7 +450,7 @@ mod iroh_mocks {
     /// `Sender<AnyMessage>` the test uses to push further messages upstream.
     pub struct MockIrohDownstream {
         endpoint: ::iroh::Endpoint,
-        target_node_addr: ::iroh::NodeAddr,
+        target_node_addr: ::iroh::EndpointAddr,
         authority_pubkey: Option<Secp256k1PublicKey>,
         setup: WithSetup,
     }
@@ -458,11 +458,11 @@ mod iroh_mocks {
     impl MockIrohDownstream {
         /// Construct a new mock iroh downstream. `endpoint` is a fresh client
         /// endpoint (use [`crate::utils::create_iroh_endpoint`]).
-        /// `target_node_addr` is the upstream peer's `NodeAddr` (also from
+        /// `target_node_addr` is the upstream peer's `EndpointAddr` (also from
         /// `create_iroh_endpoint` on the peer side).
         pub fn new(
             endpoint: ::iroh::Endpoint,
-            target_node_addr: ::iroh::NodeAddr,
+            target_node_addr: ::iroh::EndpointAddr,
             authority_pubkey: Option<Secp256k1PublicKey>,
             setup: WithSetup,
         ) -> Self {

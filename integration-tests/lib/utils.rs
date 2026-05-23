@@ -589,7 +589,7 @@ mod iroh_fixtures {
         time::Duration,
     };
 
-    use iroh::{Endpoint, NodeAddr, NodeId, RelayMode, SecretKey};
+    use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
     use stratum_apps::network_helpers::iroh::{
         admission::AdmissionPolicy,
         config::{AdmissionConfig, AdmissionMode, IrohRoleConfig},
@@ -606,20 +606,21 @@ mod iroh_fixtures {
     /// Mirrors the connector/listener test setup in
     /// `stratum_apps::network_helpers::iroh::*` so behavior matches what the
     /// production code under test exercises.
-    pub async fn create_iroh_endpoint(alpn: &'static [u8]) -> (Endpoint, NodeAddr) {
-        let secret = SecretKey::generate(rand::rngs::OsRng);
+    pub async fn create_iroh_endpoint(alpn: &'static [u8]) -> (Endpoint, EndpointAddr) {
+        let secret = SecretKey::generate();
         let node_id = secret.public();
-        let endpoint = Endpoint::builder()
+        let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .alpns(vec![alpn.to_vec()])
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind iroh test endpoint");
 
-        // Wait for the bind to settle so the returned NodeAddr carries a real
-        // direct address (iroh binds asynchronously).
+        // Wait for the bind to settle so the returned EndpointAddr carries a
+        // real direct address (iroh binds asynchronously).
         let socket = loop {
             let bound = endpoint.bound_sockets();
             if let Some(addr) = bound.iter().find(|s| s.is_ipv4()).copied() {
@@ -628,7 +629,7 @@ mod iroh_fixtures {
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
 
-        let node_addr = NodeAddr::from_parts(node_id, None, std::iter::once(socket));
+        let node_addr = EndpointAddr::new(node_id).with_ip_addr(socket);
         (endpoint, node_addr)
     }
 
@@ -640,7 +641,7 @@ mod iroh_fixtures {
         /// Admit any peer (matches production default).
         Open,
         /// Admit only the listed `NodeId`s. Empty list = "admit nothing".
-        Whitelist(Vec<NodeId>),
+        Whitelist(Vec<EndpointId>),
     }
 
     impl AdmissionTestConfig {
@@ -731,7 +732,7 @@ mod iroh_fixtures {
     /// useful primitive for the integration tests this module supports.
     pub async fn wait_for_iroh_client(
         endpoint: &Endpoint,
-        node_addr: NodeAddr,
+        node_addr: EndpointAddr,
         alpn: &'static [u8],
         timeout: Duration,
     ) -> Result<(), String> {
@@ -741,8 +742,16 @@ mod iroh_fixtures {
             attempt += 1;
             match endpoint.connect(node_addr.clone(), alpn).await {
                 Ok(connection) => {
-                    // Drop immediately; the caller only wanted to confirm
-                    // reachability.
+                    // Close the QUIC connection cleanly with a "probe done"
+                    // reason so the listener's `accept_bi` errors out
+                    // immediately rather than blocking until its
+                    // per-request timeout fires. iroh 1.0-rc treats a bare
+                    // `drop` as a graceful close that may take a few
+                    // milliseconds to propagate, which can make the
+                    // following real dial race the listener's previous
+                    // accept-pipeline timeout.
+                    use ::iroh::endpoint::VarInt;
+                    connection.close(VarInt::from_u32(0), b"probe done");
                     drop(connection);
                     return Ok(());
                 }

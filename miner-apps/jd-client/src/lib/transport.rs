@@ -41,7 +41,7 @@ use stratum_apps::key_utils::Secp256k1PublicKey;
 use tracing::{debug, info};
 
 #[cfg(feature = "iroh-transport")]
-use iroh::{Endpoint, NodeAddr, NodeId, RelayUrl};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl};
 #[cfg(feature = "iroh-transport")]
 use std::str::FromStr;
 #[cfg(feature = "iroh-transport")]
@@ -441,18 +441,18 @@ fn build_target(
     }
 }
 
-/// Parse a base32-lowercase iroh `NodeId` plus an optional relay URL into a
-/// [`NodeAddr`]. Returns `None` (and logs a warning) on malformed input so
+/// Parse a base32-lowercase iroh `EndpointId` plus an optional relay URL into a
+/// [`EndpointAddr`]. Returns `None` (and logs a warning) on malformed input so
 /// the caller can degrade to the TCP leg.
 #[cfg(feature = "iroh-transport")]
-fn parse_node_addr(node_id_str: &str, relay_url: Option<&str>) -> Option<NodeAddr> {
-    let node_id = match NodeId::from_str(node_id_str) {
+fn parse_node_addr(node_id_str: &str, relay_url: Option<&str>) -> Option<EndpointAddr> {
+    let node_id = match EndpointId::from_str(node_id_str) {
         Ok(id) => id,
         Err(e) => {
             warn!(
                 node_id = node_id_str,
                 error = %e,
-                "[iroh-transport] failed to parse iroh NodeId; falling back to TCP for this target"
+                "[iroh-transport] failed to parse iroh EndpointId; falling back to TCP for this target"
             );
             return None;
         }
@@ -468,7 +468,11 @@ fn parse_node_addr(node_id_str: &str, relay_url: Option<&str>) -> Option<NodeAdd
             None
         }
     });
-    Some(NodeAddr::from_parts(node_id, relay, std::iter::empty()))
+    let mut addr = EndpointAddr::new(node_id);
+    if let Some(relay) = relay {
+        addr = addr.with_relay_url(relay);
+    }
+    Some(addr)
 }
 
 /// Spawn the read/write bridge tasks that translate between a transport-agnostic

@@ -47,15 +47,15 @@
 //!    from [`crate::network_helpers::iroh::alpn`] before invoking
 //!    [`build_endpoint`](crate::network_helpers::iroh::endpoint::build_endpoint).
 //! 3. Build the [`AdmissionHandle`] from `admission`.
-//! 4. Lift each `connection_overrides` entry from `(NodeId, SocketAddr)` into
-//!    `(NodeId, NodeAddr)` so the connector can dial it directly.
+//! 4. Lift each `connection_overrides` entry from `(EndpointId, SocketAddr)` into
+//!    `(EndpointId, EndpointAddr)` so the connector can dial it directly.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use iroh::{NodeAddr, NodeId};
+use iroh::{EndpointAddr, EndpointId};
 use serde::Deserialize;
 
 use crate::network_helpers::iroh::admission::AdmissionHandle;
@@ -156,8 +156,8 @@ pub struct AdmissionConfig {
     #[serde(default = "default_admission_mode")]
     pub mode: AdmissionMode,
     /// Initial allowlist when `mode = "whitelist"`. Updateable at runtime.
-    /// Each entry is a base32-lowercase `NodeId`, parsed by
-    /// [`NodeId::from_str`].
+    /// Each entry is a base32-lowercase `EndpointId`, parsed by
+    /// [`EndpointId::from_str`].
     #[serde(default)]
     pub allowed_node_ids: Vec<String>,
 }
@@ -175,11 +175,11 @@ impl Default for AdmissionConfig {
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum AdmissionMode {
-    /// Admit any NodeId. Default. Suitable for low-friction mining where
+    /// Admit any EndpointId. Default. Suitable for low-friction mining where
     /// peer-level filtering happens elsewhere (Noise authority verification).
     Open,
-    /// Admit only NodeIds in `allowed_node_ids`. The two-layer identity
-    /// model rejects non-listed NodeIds at the QUIC layer, before any SV2
+    /// Admit only EndpointIds in `allowed_node_ids`. The two-layer identity
+    /// model rejects non-listed EndpointIds at the QUIC layer, before any SV2
     /// bytes flow.
     Whitelist,
 }
@@ -204,10 +204,10 @@ pub struct ResolvedIrohRoleConfig {
     /// pipelines.
     pub per_request_timeout: Duration,
     /// Operator-supplied dial overrides, lifted from the discovery resolve
-    /// output (`SocketAddr` per NodeId) into the [`NodeAddr`] form the
+    /// output (`SocketAddr` per EndpointId) into the [`EndpointAddr`] form the
     /// [`IrohSv2Connector`](crate::network_helpers::iroh::connector::IrohSv2Connector)
     /// consumes.
-    pub connection_overrides: BTreeMap<NodeId, NodeAddr>,
+    pub connection_overrides: BTreeMap<EndpointId, EndpointAddr>,
 }
 
 /// Errors produced while resolving an [`IrohRoleConfig`] into its runtime
@@ -218,8 +218,8 @@ pub enum IrohConfigError {
     /// [`DiscoveryConfigError`].
     Discovery(DiscoveryConfigError),
     /// An entry in `admission.allowed_node_ids` failed to parse as a
-    /// [`NodeId`].
-    InvalidNodeId {
+    /// [`EndpointId`].
+    InvalidEndpointId {
         /// The base32 string that failed to parse.
         value: String,
         /// Stringified underlying error.
@@ -243,8 +243,8 @@ impl std::fmt::Display for IrohConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IrohConfigError::Discovery(e) => write!(f, "discovery config error: {e}"),
-            IrohConfigError::InvalidNodeId { value, source } => {
-                write!(f, "invalid NodeId {value}: {source}")
+            IrohConfigError::InvalidEndpointId { value, source } => {
+                write!(f, "invalid EndpointId {value}: {source}")
             }
             IrohConfigError::AdmissionRequired(reason) => {
                 write!(f, "admission section required: {reason}")
@@ -275,10 +275,10 @@ impl IrohRoleConfig {
     ///    `alpns` is left empty for the call site to fill.
     /// 3. Build the [`AdmissionHandle`] per `admission.mode`. Whitelist mode
     ///    parses each `allowed_node_ids` entry; failures surface as
-    ///    [`IrohConfigError::InvalidNodeId`].
+    ///    [`IrohConfigError::InvalidEndpointId`].
     /// 4. Lift each `connection_overrides` entry from
-    ///    `(NodeId, SocketAddr)` into `(NodeId, NodeAddr)` via
-    ///    [`NodeAddr::from_parts`].
+    ///    `(EndpointId, SocketAddr)` into `(EndpointId, EndpointAddr)` via
+    ///    [`EndpointAddr::from_parts`].
     ///
     /// Two warnings are emitted via `tracing` (not errors):
     ///
@@ -316,8 +316,8 @@ impl IrohRoleConfig {
             AdmissionMode::Whitelist => {
                 let mut set = BTreeSet::new();
                 for raw in &self.admission.allowed_node_ids {
-                    let node_id = NodeId::from_str(raw).map_err(|e| {
-                        IrohConfigError::InvalidNodeId {
+                    let node_id = EndpointId::from_str(raw).map_err(|e| {
+                        IrohConfigError::InvalidEndpointId {
                             value: raw.clone(),
                             source: e.to_string(),
                         }
@@ -327,7 +327,7 @@ impl IrohRoleConfig {
                 if set.is_empty() {
                     tracing::warn!(
                         "iroh.admission.mode = \"whitelist\" with an empty allowed_node_ids; \
-                         the listener will admit no peers. Add at least one NodeId or set \
+                         the listener will admit no peers. Add at least one EndpointId or set \
                          mode = \"open\"."
                     );
                 }
@@ -335,13 +335,13 @@ impl IrohRoleConfig {
             }
         };
 
-        // --- Step 4: lift SocketAddr overrides into NodeAddr overrides. ---
+        // --- Step 4: lift SocketAddr overrides into EndpointAddr overrides. ---
         let mut connection_overrides = BTreeMap::new();
         for (node_id, socket_addr) in &discovery.connection_overrides {
-            // NodeAddr::from_parts takes (NodeId, Option<RelayUrl>, impl
-            // IntoIterator<Item = SocketAddr>); the relay slot is None
-            // because operator overrides are explicit direct dials.
-            let node_addr = NodeAddr::from_parts(*node_id, None, std::iter::once(*socket_addr));
+            // iroh 1.0-rc EndpointAddr is built from an EndpointId + a set of
+            // TransportAddr values; operator overrides are explicit direct IP
+            // dials, so we add a single Ip transport address.
+            let node_addr = EndpointAddr::new(*node_id).with_ip_addr(*socket_addr);
             connection_overrides.insert(*node_id, node_addr);
         }
 
@@ -360,9 +360,9 @@ mod tests {
     use crate::network_helpers::iroh::admission::AdmissionPolicy;
     use iroh::SecretKey;
 
-    /// Derive a deterministic [`NodeId`] (and its base32 string form) from a
+    /// Derive a deterministic [`EndpointId`] (and its base32 string form) from a
     /// 32-byte seed. Mirrors the helper used in `discovery::tests`.
-    fn node_id_from_seed(seed: [u8; 32]) -> (NodeId, String) {
+    fn node_id_from_seed(seed: [u8; 32]) -> (EndpointId, String) {
         let secret = SecretKey::from_bytes(&seed);
         let pk = secret.public();
         let s = pk.to_string();
@@ -465,7 +465,7 @@ allowed_node_ids = ["{s_a}"]
             resolved.endpoint_config.discovery.relay_url.as_deref(),
             Some("https://relay.example.com")
         );
-        // Whitelist resolved with the one configured NodeId.
+        // Whitelist resolved with the one configured EndpointId.
         match resolved.admission.snapshot() {
             AdmissionPolicy::Whitelist(set) => {
                 assert_eq!(set.len(), 1);
@@ -473,19 +473,19 @@ allowed_node_ids = ["{s_a}"]
             }
             AdmissionPolicy::Open => panic!("expected Whitelist, got Open"),
         }
-        // Override lifted from SocketAddr -> NodeAddr.
+        // Override lifted from SocketAddr -> EndpointAddr.
         assert_eq!(resolved.connection_overrides.len(), 1);
         let na = resolved
             .connection_overrides
             .get(&id_a)
             .expect("override for id_a");
-        assert_eq!(na.node_id, id_a);
-        let directs: Vec<_> = na.direct_addresses().copied().collect();
+        assert_eq!(na.id, id_a);
+        let directs: Vec<_> = na.ip_addrs().copied().collect();
         assert_eq!(directs.len(), 1);
         assert_eq!(directs[0].to_string(), "192.0.2.5:34256");
     }
 
-    /// Test 3: `mode = "whitelist"` with two valid NodeIds yields a
+    /// Test 3: `mode = "whitelist"` with two valid EndpointIds yields a
     /// [`AdmissionPolicy::Whitelist`] snapshot containing both.
     #[test]
     fn admission_whitelist_with_valid_node_ids() {
@@ -516,7 +516,7 @@ allowed_node_ids = ["{s_a}", "{s_b}"]
     }
 
     /// Test 4: a malformed base32 string in `allowed_node_ids` surfaces
-    /// [`IrohConfigError::InvalidNodeId`] from `resolve()`.
+    /// [`IrohConfigError::InvalidEndpointId`] from `resolve()`.
     #[test]
     fn admission_whitelist_with_invalid_node_id() {
         let raw = r#"
@@ -529,12 +529,12 @@ allowed_node_ids = ["not-a-real-node-id"]
 "#;
 
         let cfg: IrohRoleConfig = toml::from_str(raw).expect("parse");
-        let err = cfg.resolve().expect_err("invalid NodeId must error");
+        let err = cfg.resolve().expect_err("invalid EndpointId must error");
         match err {
-            IrohConfigError::InvalidNodeId { value, .. } => {
+            IrohConfigError::InvalidEndpointId { value, .. } => {
                 assert_eq!(value, "not-a-real-node-id");
             }
-            other => panic!("expected InvalidNodeId, got {other:?}"),
+            other => panic!("expected InvalidEndpointId, got {other:?}"),
         }
     }
 

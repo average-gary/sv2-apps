@@ -58,9 +58,9 @@ where
     connection: iroh::endpoint::Connection,
     /// The Noise NX stream we will pump frames over.
     noise_stream: NoiseIrohStream<M>,
-    /// Cached remote NodeId, exposed via [`remote_node_id`](Self::remote_node_id)
+    /// Cached remote EndpointId, exposed via [`remote_endpoint_id`](Self::remote_endpoint_id)
     /// before [`into_channels`] consumes the conn.
-    node_id: iroh::NodeId,
+    endpoint_id: iroh::EndpointId,
 }
 
 struct ConnectionState<M>
@@ -97,24 +97,24 @@ where
     ///
     /// All three values must be from the same flow: `connection` is the QUIC
     /// connection that produced the bidi stream wrapped inside `noise_stream`,
-    /// and `node_id` is the verified remote NodeId observed at QUIC
+    /// and `endpoint_id` is the verified remote EndpointId observed at QUIC
     /// handshake time.
     pub fn new(
         connection: iroh::endpoint::Connection,
         noise_stream: NoiseIrohStream<M>,
-        node_id: iroh::NodeId,
+        endpoint_id: iroh::EndpointId,
     ) -> Self {
         Self {
             connection,
             noise_stream,
-            node_id,
+            endpoint_id,
         }
     }
 
-    /// Remote NodeId observed at QUIC handshake time. Available before
+    /// Remote EndpointId observed at QUIC handshake time. Available before
     /// [`into_channels`](Self::into_channels) consumes `self`.
-    pub fn remote_node_id(&self) -> iroh::NodeId {
-        self.node_id
+    pub fn remote_endpoint_id(&self) -> iroh::EndpointId {
+        self.endpoint_id
     }
 
     /// Spawn the reader and writer tasks and return the
@@ -333,16 +333,17 @@ mod tests {
 
     /// Build an iroh server endpoint bound to loopback, no relay, no
     /// discovery, accepting one ALPN.
-    async fn build_server_endpoint() -> (iroh::Endpoint, iroh::NodeId, std::net::SocketAddr) {
-        use ::iroh::{Endpoint, RelayMode, SecretKey};
+    async fn build_server_endpoint() -> (iroh::Endpoint, iroh::EndpointId, std::net::SocketAddr) {
+        use ::iroh::{endpoint::presets, Endpoint, RelayMode, SecretKey};
 
-        let secret = SecretKey::generate(rand::rngs::OsRng);
-        let node_id = secret.public();
-        let ep = Endpoint::builder()
+        let secret = SecretKey::generate();
+        let endpoint_id = secret.public();
+        let ep = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .alpns(vec![SV2_POOL_ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind server endpoint");
@@ -357,17 +358,18 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
 
-        (ep, node_id, addr)
+        (ep, endpoint_id, addr)
     }
 
     /// Build a loopback iroh client endpoint with no relay / discovery.
     async fn build_client_endpoint() -> iroh::Endpoint {
-        use ::iroh::{Endpoint, RelayMode, SecretKey};
+        use ::iroh::{endpoint::presets, Endpoint, RelayMode, SecretKey};
 
-        Endpoint::builder()
-            .secret_key(SecretKey::generate(rand::rngs::OsRng))
+        Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::generate())
             .relay_mode(RelayMode::Disabled)
-            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .expect("bind addr v4")
             .bind()
             .await
             .expect("bind client endpoint")
@@ -378,11 +380,11 @@ mod tests {
     /// call `into_channels`, and round-trip a SetupConnection frame.
     #[tokio::test]
     async fn into_channels_round_trips_a_frame() {
-        use ::iroh::NodeAddr;
+        use ::iroh::EndpointAddr;
 
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
-        let (server_ep, server_node_id, server_socket) = build_server_endpoint().await;
+        let (server_ep, server_endpoint_id, server_socket) = build_server_endpoint().await;
         let client_ep = build_client_endpoint().await;
 
         // Server: accept one connection, build IrohConnection, expose
@@ -390,7 +392,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let incoming = server_ep.accept().await.expect("accept incoming");
             let connection = incoming.await.expect("incoming -> connection");
-            let remote = connection.remote_node_id().expect("remote node id");
+            let remote = connection.remote_id();
             let (send, recv) = connection.accept_bi().await.expect("accept_bi");
             let duplex = IrohDuplex { send, recv };
             let noise = NoiseGenericStream::<IrohDuplex, AnyMessage<'static>>::new(
@@ -411,16 +413,12 @@ mod tests {
         });
 
         // Client: dial server, build IrohConnection, send a frame, read echo.
-        let server_addr = NodeAddr::from_parts(
-            server_node_id,
-            None,
-            std::iter::once(server_socket),
-        );
+        let server_addr = EndpointAddr::new(server_endpoint_id).with_ip_addr(server_socket);
         let connection = client_ep
             .connect(server_addr, SV2_POOL_ALPN)
             .await
             .expect("client connect");
-        let remote = connection.remote_node_id().expect("remote node id");
+        let remote = connection.remote_id();
         let (send, recv) = connection.open_bi().await.expect("open_bi");
         let duplex = IrohDuplex { send, recv };
         let noise = NoiseGenericStream::<IrohDuplex, AnyMessage<'static>>::new(
@@ -432,7 +430,7 @@ mod tests {
         .expect("initiator handshake");
 
         let conn = IrohConnection::<AnyMessage<'static>>::new(connection, noise, remote);
-        assert_eq!(conn.remote_node_id(), remote);
+        assert_eq!(conn.remote_endpoint_id(), remote);
         let (rx, tx) = conn.into_channels();
 
         let (frame, expected_payload) = build_setup_connection_frame();

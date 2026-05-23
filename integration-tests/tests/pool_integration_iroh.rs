@@ -41,12 +41,11 @@ use integration_tests_sv2::{
         wait_for_iroh_client, AdmissionTestConfig,
     },
 };
-use iroh::{NodeAddr, SecretKey};
+use iroh::{EndpointAddr, SecretKey};
 use pool_sv2::{
     config::{AuthorityConfig, ConnectionConfig, PoolConfig},
     PoolSv2,
 };
-use rand::rngs::OsRng;
 use stratum_apps::{
     config_helpers::CoinbaseRewardScript,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
@@ -96,8 +95,8 @@ static SECRET_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The file is written with mode `0600` on Unix (so Fedimint-flavored
 /// secret-key handling stays consistent with what `identity::persist_inner`
 /// does in production).
-fn pregenerate_pool_iroh_identity(bound_addr: SocketAddr) -> (NodeAddr, PathBuf) {
-    let secret = SecretKey::generate(OsRng);
+fn pregenerate_pool_iroh_identity(bound_addr: SocketAddr) -> (EndpointAddr, PathBuf) {
+    let secret = SecretKey::generate();
     let node_id = secret.public();
 
     // Unique-per-test file path. PID + atomic counter + nanos → no overlap
@@ -121,7 +120,7 @@ fn pregenerate_pool_iroh_identity(bound_addr: SocketAddr) -> (NodeAddr, PathBuf)
             .expect("chmod 0600 iroh secret key file");
     }
 
-    let node_addr = NodeAddr::from_parts(node_id, None, std::iter::once(bound_addr));
+    let node_addr = EndpointAddr::new(node_id).with_ip_addr(bound_addr);
     (node_addr, path)
 }
 
@@ -295,7 +294,7 @@ async fn pool_iroh_whitelist_rejects_unknown_node_id() {
     // The "allowed" NodeId is one we generate but never use as a dialer —
     // the actual dialer's NodeId (built by `create_iroh_endpoint`) will not
     // be in the whitelist.
-    let allowed_node_id = SecretKey::generate(OsRng).public();
+    let allowed_node_id = SecretKey::generate().public();
 
     let (pool, _tcp_addr, _) = start_pool_with_iroh(
         integration_tests_sv2::sv2_tp_config(tp_addr),
