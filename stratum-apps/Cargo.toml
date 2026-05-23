@@ -55,6 +55,16 @@ ext-config = { version = "0.14.0", features = ["toml"], package = "config" }
 shellexpand = "3.1.1"
 dashmap = "6.1.0"
 
+# Transport-trait abstraction (always required; used by `network_helpers::transport`).
+async-trait   = { version = "0.1" }
+
+# Iroh transport optional dependencies
+iroh          = { version = "0.91", default-features = false, features = ["discovery-pkarr-dht"], optional = true }
+iroh-base     = { version = "0.91", default-features = false, optional = true }
+ed25519-dalek = { version = "2.1",  default-features = false, features = ["std", "rand_core"], optional = true }
+arc-swap      = { version = "1.7",  optional = true }
+data-encoding = { version = "2.6",  optional = true }
+
 [features]
 default = ["network", "fallback-coordinator", "config", "std"]
 
@@ -67,6 +77,21 @@ monitoring = ["serde_json", "axum", "prometheus", "utoipa", "utoipa-swagger-ui"]
 asic-rs-telemetry = ["monitoring", "dep:asic-rs"]
 std = ["bs58/std", "secp256k1/rand-std", "rand/std", "rand/std_rng"]
 core = ["stratum-core"]
+
+# Iroh transport (alternative to plain TCP for SV2 connections)
+iroh-transport = [
+    "dep:iroh",
+    "dep:iroh-base",
+    "dep:ed25519-dalek",
+    "dep:arc-swap",
+    "dep:data-encoding",
+    "network",
+]
+
+# Iroh transport with Prometheus observability. Compiles the per-role
+# counters/gauges/histograms in `network_helpers::iroh::metrics` and registers
+# them with the existing `monitoring`-feature Prometheus registry.
+iroh-transport-monitoring = ["iroh-transport", "monitoring"]
 
 # Protocol features passed through to stratum-core
 sv1 = ["stratum-core/sv1", "stratum-core/translation", "tokio-util", "serde_json"]
@@ -85,6 +110,12 @@ mining_device = ["config"]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 hyper = "1.1.0"
+tempfile = "3.10"
+# Used by `network_helpers::iroh::config::tests` to deserialize TOML fixtures
+# directly. Not a runtime dep — the apps load TOML via `ext-config` (the
+# `config` crate). Already present transitively via `ext-config`'s
+# `toml` feature.
+toml = "0.8"
 
 [[bin]]
 name = "generate-openapi"

@@ -10,16 +10,21 @@
 //! Originally from the `network_helpers_sv2` crate.
 
 pub mod noise_connection;
+pub mod noise_generic_stream;
 pub mod noise_stream;
 pub mod resolve_hostname;
+pub mod transport;
 
 #[cfg(feature = "sv1")]
 pub mod sv1_connection;
 
+#[cfg(feature = "iroh-transport")]
+pub mod iroh;
+
 pub use resolve_hostname::{resolve_host, resolve_host_port, ResolveError};
 
 use async_channel::{RecvError, SendError};
-use std::{fmt, time::Duration};
+use std::{fmt, net::SocketAddr, time::Duration};
 use stratum_core::{
     binary_sv2::{Deserialize, GetSize, Serialize},
     codec_sv2::{Error as CodecError, HandshakeRole},
@@ -51,6 +56,41 @@ pub enum Error {
     InvalidKey,
     /// DNS resolution failed for a hostname
     DnsResolutionFailed(String),
+    /// Failed to bind a listener socket. Carries a human-readable description
+    /// of the failed bind (address + underlying io error).
+    BindFailed(String),
+    /// Outbound TCP connect timed out for the given address.
+    TcpConnectTimeout(SocketAddr),
+    /// Outbound TCP connect failed (other than timeout). Carries a
+    /// human-readable description.
+    TcpConnectFailed(String),
+    /// The supplied [`crate::network_helpers::transport::Sv2Target`] is not
+    /// supported by the connector or listener it was given to (e.g. a
+    /// pure-iroh target handed to a TCP-only connector). Carries a
+    /// human-readable description.
+    WrongTargetForTransport(String),
+    /// Outbound iroh dial failed (timeout, connection error, etc). Carries a
+    /// human-readable description.
+    #[cfg(feature = "iroh-transport")]
+    IrohConnect(String),
+    /// Inbound iroh accept failed at the QUIC layer (handshake error, no
+    /// remote NodeId, etc). Carries a human-readable description.
+    #[cfg(feature = "iroh-transport")]
+    IrohAccept(String),
+    /// The remote NodeId could not be extracted from the iroh peer
+    /// certificate. Carries a human-readable description.
+    #[cfg(feature = "iroh-transport")]
+    IrohUnknownPeer(String),
+    /// Inbound iroh connection rejected by the listener's admission policy.
+    #[cfg(feature = "iroh-transport")]
+    IrohAdmissionDenied,
+    /// An iroh per-request timeout fired (Fedimint PR #8571 lesson).
+    #[cfg(feature = "iroh-transport")]
+    IrohRequestTimeout,
+    /// The iroh QUIC connection was already closed when checked. Carries a
+    /// human-readable description of the close reason.
+    #[cfg(feature = "iroh-transport")]
+    IrohClosed(String),
 }
 
 impl fmt::Display for Error {
@@ -73,6 +113,36 @@ impl fmt::Display for Error {
             Error::InvalidKey => write!(f, "Invalid key provided for handshake"),
 
             Error::DnsResolutionFailed(msg) => write!(f, "DNS resolution failed: {msg}"),
+
+            Error::BindFailed(msg) => write!(f, "Failed to bind listener: {msg}"),
+
+            Error::TcpConnectTimeout(addr) => write!(f, "TCP connect timed out: {addr}"),
+
+            Error::TcpConnectFailed(msg) => write!(f, "TCP connect failed: {msg}"),
+
+            Error::WrongTargetForTransport(msg) => {
+                write!(f, "Sv2Target not supported by this transport: {msg}")
+            }
+
+            #[cfg(feature = "iroh-transport")]
+            Error::IrohConnect(msg) => write!(f, "iroh connect failed: {msg}"),
+
+            #[cfg(feature = "iroh-transport")]
+            Error::IrohAccept(msg) => write!(f, "iroh accept failed: {msg}"),
+
+            #[cfg(feature = "iroh-transport")]
+            Error::IrohUnknownPeer(msg) => write!(f, "iroh remote NodeId unavailable: {msg}"),
+
+            #[cfg(feature = "iroh-transport")]
+            Error::IrohAdmissionDenied => {
+                write!(f, "iroh peer rejected by admission policy")
+            }
+
+            #[cfg(feature = "iroh-transport")]
+            Error::IrohRequestTimeout => write!(f, "iroh per-request timeout"),
+
+            #[cfg(feature = "iroh-transport")]
+            Error::IrohClosed(msg) => write!(f, "iroh connection closed: {msg}"),
         }
     }
 }
