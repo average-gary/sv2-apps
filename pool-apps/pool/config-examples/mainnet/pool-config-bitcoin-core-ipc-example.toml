@@ -47,3 +47,31 @@ min_interval = 5
 # from the Pool config above.
 # [jds]
 # listen_address = "0.0.0.0:34254"
+
+# Optional: enable iroh-transport alongside TCP. When this section is
+# present AND the pool binary is compiled with the `iroh-transport` cargo
+# feature, the pool listens on TCP AND iroh QUIC simultaneously; downstream
+# clients can connect via either transport. Without the feature, the
+# `[iroh]` section is silently ignored. See the implementation plan
+# §"Per-role `[iroh]` section" for the canonical schema.
+#
+# [iroh]
+# listen_address = "0.0.0.0:34256"
+# secret_key_path = "~/.config/sv2/pool/iroh-secret.ed25519"
+# relay_url = ""
+# discovery_relay_enable = true
+# discovery_pkarr_pub_enable = true
+# discovery_pkarr_res_enable = true
+# discovery_dht_enable = false
+# discovery_n0_enable = true
+# max_idle_timeout_secs = 60
+# keep_alive_interval_secs = 30
+# per_request_timeout_secs = 30
+#
+# [iroh.connection_overrides]
+# # "k51..." = "1.2.3.4:34256"
+#
+# [iroh.admission]
+# mode = "open"
+# # mode = "whitelist"
+# allowed_node_ids = []

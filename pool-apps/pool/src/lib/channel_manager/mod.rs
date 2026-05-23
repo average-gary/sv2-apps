@@ -14,7 +14,7 @@ use stratum_apps::{
     coinbase_output_constraints::coinbase_output_constraints_message_with_offset,
     config_helpers::CoinbaseRewardScript,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
-    network_helpers::accept_noise_connection,
+    network_helpers::transport::{Sv2Listener, TcpSv2Listener},
     stratum_core::{
         bitcoin::{Amount, TxOut},
         channels_sv2::{
@@ -31,10 +31,21 @@ use stratum_apps::{
     },
     sync::{SharedLock, SharedMap},
     task_manager::TaskManager,
-    utils::types::{ChannelId, DownstreamId, SharesPerMinute, VardiffKey},
+    utils::types::{ChannelId, DownstreamId, Message, SharesPerMinute, VardiffKey},
 };
-use tokio::{net::TcpListener, select};
+use tokio::select;
+#[cfg(feature = "iroh-transport")]
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::{
+    iroh::{
+        alpn::SV2_POOL_ALPN, listener::IrohSv2Listener, Endpoint as IrohEndpoint,
+        ResolvedIrohRoleConfig,
+    },
+    transport::{ConnPair, PeerIdentity},
+};
 
 use jd_server_sv2::job_declarator::JobDeclarator;
 
@@ -252,6 +263,17 @@ impl ChannelManager {
     }
 
     /// Starts the downstream server, and accepts new connection request.
+    ///
+    /// When `iroh_listener_inputs` is `Some` (and the `iroh-transport` feature
+    /// is enabled), the pool listens on TCP AND iroh QUIC simultaneously via
+    /// [`build_pool_listener`]. Both transports funnel into a single accept
+    /// loop. When `iroh_listener_inputs` is `None`, the listener is TCP-only —
+    /// behaviorally identical to the pre-iroh code path.
+    ///
+    /// The iroh `Endpoint` is built once at pool startup (in `lib::start`)
+    /// and shared between this listener and the outbound `Sv2Tp` dial site so
+    /// a single magicsock task drives both directions (per iroh's "one
+    /// Endpoint per app" guidance).
     #[allow(clippy::too_many_arguments)]
     pub async fn start_downstream_server(
         self,
@@ -259,6 +281,10 @@ impl ChannelManager {
         authority_secret_key: Secp256k1SecretKey,
         cert_validity_sec: u64,
         listening_address: SocketAddr,
+        #[cfg(feature = "iroh-transport")] iroh_listener_inputs: Option<(
+            IrohEndpoint,
+            ResolvedIrohRoleConfig,
+        )>,
         task_manager: Arc<TaskManager>,
         cancellation_token: CancellationToken,
         channel_manager_sender: Sender<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
@@ -295,13 +321,16 @@ impl ChannelManager {
         }
 
         info!("Starting downstream server at {listening_address}");
-        let server = TcpListener::bind(listening_address)
-            .await
-            .map_err(|e| {
-                error!(error = ?e, "Failed to bind downstream server at {listening_address}");
-                e
-            })
-            .map_err(PoolError::shutdown)?;
+        let listener = build_pool_listener(
+            listening_address,
+            authority_public_key,
+            authority_secret_key,
+            cert_validity_sec,
+            #[cfg(feature = "iroh-transport")]
+            iroh_listener_inputs,
+        )
+        .await
+        .map_err(PoolError::shutdown)?;
 
         let task_manager_clone = task_manager.clone();
         let cancellation_token_clone = cancellation_token.clone();
@@ -313,10 +342,10 @@ impl ChannelManager {
                         info!("Channel Manager: received shutdown signal");
                         break;
                     }
-                    res = server.accept() => {
+                    res = listener.accept() => {
                         match res {
-                            Ok((stream, socket_address)) => {
-                                info!(%socket_address, "New downstream connection");
+                            Ok((peer_identity, conn_pair)) => {
+                                info!(?peer_identity, "New downstream connection");
 
                                 let this = Arc::clone(&this);
                                 let cancellation_token_inner = cancellation_token_clone.clone();
@@ -325,22 +354,6 @@ impl ChannelManager {
 
                                 task_manager_clone.spawn(async move {
                                     let cancellation_token_clone = cancellation_token_inner.clone();
-                                    let noise_stream = tokio::select! {
-                                        biased;
-                                        _ = cancellation_token_inner.cancelled() => {
-                                            info!("Shutdown received during handshake, dropping connection");
-                                            return;
-                                        }
-                                        result = accept_noise_connection(stream, authority_public_key, authority_secret_key, cert_validity_sec) => {
-                                            match result {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    error!(error = ?e, "Noise handshake failed");
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    };
 
                                     let downstream_id = this
                                         .downstream_id_factory
@@ -372,7 +385,7 @@ impl ChannelManager {
                                         group_channel,
                                         channel_manager_sender_inner,
                                         channel_manager_receiver,
-                                        noise_stream,
+                                        conn_pair,
                                         cancellation_token_inner.clone(),
                                         task_manager_inner.clone(),
                                         this.supported_extensions.clone(),
@@ -393,12 +406,12 @@ impl ChannelManager {
                                         )
                                         .await;
                                 });
-                                }
-
-                                Err(e) => {
-                                    error!(error = ?e, "Failed to accept new downstream connection");
-                                }
                             }
+
+                            Err(e) => {
+                                error!(error = ?e, "Failed to accept new downstream connection");
+                            }
+                        }
                     }
                 }
             }
@@ -781,5 +794,149 @@ impl RouteMessageTo<'_> {
             }
         }
         Ok(())
+    }
+}
+
+/// Build the pool's downstream listener.
+///
+/// Always returns a TCP listener; when the `iroh-transport` feature is enabled
+/// AND `iroh_config` is `Some`, also spins up an iroh QUIC listener and fans
+/// both into a single accept stream via [`DualSv2Listener`].
+///
+/// Per plan §"Server side — listen on both simultaneously": the dual-listener
+/// path spawns two accept tasks that funnel into one
+/// `mpsc::channel<(PeerIdentity, ConnPair<M>)>`. Downstream callers consume
+/// the trait-level `accept()` and cannot tell which transport produced a
+/// given connection.
+async fn build_pool_listener(
+    listening_address: SocketAddr,
+    authority_public_key: Secp256k1PublicKey,
+    authority_secret_key: Secp256k1SecretKey,
+    cert_validity_sec: u64,
+    #[cfg(feature = "iroh-transport")] iroh_listener_inputs: Option<(
+        IrohEndpoint,
+        ResolvedIrohRoleConfig,
+    )>,
+) -> Result<Arc<dyn Sv2Listener<Message>>, PoolErrorKind> {
+    let tcp = TcpSv2Listener::bind(
+        listening_address,
+        authority_public_key,
+        authority_secret_key,
+        cert_validity_sec,
+    )
+    .await
+    .map_err(|e| {
+        error!(error = ?e, "Failed to bind downstream TCP listener at {listening_address}");
+        PoolErrorKind::Io(std::io::Error::other(e.to_string()))
+    })?;
+
+    #[cfg(feature = "iroh-transport")]
+    {
+        if let Some((endpoint, resolved)) = iroh_listener_inputs {
+            info!("Iroh transport configured; building dual TCP+iroh listener");
+            let iroh_listener = IrohSv2Listener::new(
+                endpoint,
+                resolved.admission,
+                authority_public_key,
+                authority_secret_key,
+                cert_validity_sec,
+                SV2_POOL_ALPN,
+                resolved.per_request_timeout,
+            );
+            let dual = DualSv2Listener::spawn(tcp, iroh_listener);
+            return Ok(Arc::new(dual) as Arc<dyn Sv2Listener<Message>>);
+        }
+    }
+
+    Ok(Arc::new(tcp) as Arc<dyn Sv2Listener<Message>>)
+}
+
+/// Dual-transport listener that fans two inner listeners into one accept
+/// channel.
+///
+/// Spawns one detached task per inner listener; each task loops on
+/// `accept()` and forwards `(PeerIdentity, ConnPair)` results into a single
+/// `mpsc::channel`. Errors from either inner listener are forwarded as-is so
+/// the caller can handle them uniformly. When all senders close (both inner
+/// loops exit), `accept()` returns
+/// [`stratum_apps::network_helpers::Error::SocketClosed`].
+///
+/// Only built when the `iroh-transport` feature is enabled — the TCP-only
+/// path uses [`TcpSv2Listener`] directly.
+#[cfg(feature = "iroh-transport")]
+struct DualSv2Listener {
+    rx: tokio::sync::Mutex<mpsc::Receiver<AcceptResult>>,
+}
+
+#[cfg(feature = "iroh-transport")]
+type AcceptResult = Result<
+    (PeerIdentity, ConnPair<Message>),
+    stratum_apps::network_helpers::Error,
+>;
+
+#[cfg(feature = "iroh-transport")]
+impl DualSv2Listener {
+    /// Channel buffer for accept results. Sized for short bursts of
+    /// concurrent handshake completions; the consumer drains in a tight
+    /// loop so back-pressure is not a concern in practice.
+    const ACCEPT_BUFFER: usize = 64;
+
+    fn spawn(tcp: TcpSv2Listener, iroh: IrohSv2Listener) -> Self {
+        let (tx, rx) = mpsc::channel::<AcceptResult>(Self::ACCEPT_BUFFER);
+
+        let tcp_arc: Arc<dyn Sv2Listener<Message>> = Arc::new(tcp);
+        let iroh_arc: Arc<dyn Sv2Listener<Message>> = Arc::new(iroh);
+
+        Self::spawn_accept_loop(tcp_arc, tx.clone(), "tcp");
+        Self::spawn_accept_loop(iroh_arc, tx, "iroh");
+
+        Self {
+            rx: tokio::sync::Mutex::new(rx),
+        }
+    }
+
+    fn spawn_accept_loop(
+        listener: Arc<dyn Sv2Listener<Message>>,
+        tx: mpsc::Sender<AcceptResult>,
+        transport_label: &'static str,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                let res = listener.accept().await;
+                let is_fatal = matches!(
+                    &res,
+                    Err(stratum_apps::network_helpers::Error::SocketClosed)
+                );
+                if let Err(e) = tx.send(res).await {
+                    debug!(
+                        transport = transport_label,
+                        error = ?e,
+                        "Dual listener fan-in: receiver dropped, stopping accept loop"
+                    );
+                    break;
+                }
+                if is_fatal {
+                    info!(
+                        transport = transport_label,
+                        "Dual listener fan-in: inner listener closed, stopping accept loop"
+                    );
+                    break;
+                }
+            }
+        });
+    }
+}
+
+#[cfg(feature = "iroh-transport")]
+#[async_trait::async_trait]
+impl Sv2Listener<Message> for DualSv2Listener {
+    async fn accept(
+        &self,
+    ) -> Result<(PeerIdentity, ConnPair<Message>), stratum_apps::network_helpers::Error> {
+        let mut rx = self.rx.lock().await;
+        match rx.recv().await {
+            Some(res) => res,
+            None => Err(stratum_apps::network_helpers::Error::SocketClosed),
+        }
     }
 }

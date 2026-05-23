@@ -61,3 +61,41 @@ min_interval = 5
 # from the Pool config above.
 [jds]
 listen_address = "0.0.0.0:3334"
+
+# (optional) iroh-transport configuration for the JDS *listener*.
+#
+# This section is only honored when `pool_sv2` is built with
+# `--features iroh-transport`. When present, JDS listens for JDC connections
+# over TCP (above) AND iroh QUIC simultaneously. Each transport's accept
+# stream feeds the same downstream-handling pipeline; downstream code cannot
+# tell which transport produced a given connection.
+#
+# JDS registers exactly the `sv2/jds/0` ALPN at the QUIC layer — JDC dials it
+# with the matching ALPN. Mismatched ALPNs are rejected at the QUIC handshake
+# before any SV2 bytes flow.
+#
+# See plan §"Per-role `[iroh]` section (TOML)" and the Phase 3b PR for the
+# full schema. The Ed25519 NodeId secret is auto-generated (mode 0600) on
+# first start if `secret_key_path` does not exist.
+#
+# [jds.iroh]
+# listen_address  = "0.0.0.0:34257"
+# secret_key_path = "~/.config/sv2/jds/iroh-secret.ed25519"
+#
+# # Optional (defaults shown):
+# # discovery_relay_enable      = true
+# # discovery_pkarr_pub_enable  = true
+# # discovery_pkarr_res_enable  = true
+# # discovery_dht_enable        = false
+# # discovery_n0_enable         = true
+# # relay_url                   = ""
+# # max_idle_timeout_secs       = 60
+# # keep_alive_interval_secs    = 30
+# # per_request_timeout_secs    = 30
+#
+# # [jds.iroh.connection_overrides]
+# # "k51qzi5uqu5dl..." = "192.0.2.5:34257"
+#
+# # [jds.iroh.admission]
+# # mode = "open"            # one of: "open", "whitelist"
+# # allowed_node_ids = []    # initial whitelist; mutate at runtime via the AdmissionHandle

@@ -34,3 +34,25 @@ monitoring_cache_refresh_secs = 15
 [template_provider_type.Sv2Tp]
 # address accepts "ip:port" or "hostname:port" (e.g. "tp.example.com:8442")
 address = "127.0.0.1:8442"
+
+# --------------------------------------------------------------------------
+# Optional iroh-transport extension for the upstream Sv2 Template Provider.
+# Requires the pool to be built with `--features iroh-transport`. When this
+# section is omitted (or `iroh_node_id` is unset), the pool dials the TP
+# over plain TCP — identical to the legacy behavior.
+#
+# Place this block AT THE TOP LEVEL of the file (i.e. NOT under
+# [template_provider_type.Sv2Tp]). It is a sibling of the Sv2Tp block.
+# --------------------------------------------------------------------------
+# [iroh_tp]
+# # Base32-lowercase NodeId of the TP. When set, the pool may dial over iroh.
+# iroh_node_id    = "k51qzi5uqu5dl..."
+# # Optional explicit relay URL. Empty string / unset means rely on
+# # discovery (or direct dial if no relay is needed).
+# iroh_relay_url  = ""
+# # Per-peer fallback ordering. One of:
+# #   "tcp"            — TCP only (no iroh attempt)
+# #   "iroh"           — iroh only (no TCP fallback)
+# #   "iroh_then_tcp"  — try iroh; on failure, try TCP (default)
+# #   "tcp_then_iroh"  — try TCP; on failure, try iroh
+# prefer_transport = "iroh_then_tcp"

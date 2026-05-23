@@ -8,6 +8,11 @@ use std::{
 
 use async_channel::unbounded;
 
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::iroh::{
+    alpn::SV2_POOL_ALPN, endpoint::build_endpoint, Endpoint as IrohEndpoint,
+    ResolvedIrohRoleConfig,
+};
 use stratum_apps::{
     bitcoin_core_sv2::common::template_distribution_protocol::CancellationToken,
     stratum_core::bitcoin::consensus::Encodable, task_manager::TaskManager,
@@ -137,6 +142,8 @@ impl PoolSv2 {
                     cancellation_token.clone(),
                     jds_config.supported_extensions().to_vec(),
                     jds_config.required_extensions().to_vec(),
+                    #[cfg(feature = "iroh-transport")]
+                    jds_config.iroh().cloned(),
                 )
                 .await
                 .map_err(|e| PoolErrorKind::Jds(e.into()))?;
@@ -162,6 +169,41 @@ impl PoolSv2 {
             job_declarator,
         )
         .await?;
+
+        // Build the iroh Endpoint once at startup (shared between the
+        // downstream listener and the outbound Sv2Tp dial) per iroh's
+        // "one Endpoint per app" guidance. When `[iroh]` is absent in the
+        // pool TOML, this stays `None` and every code path defaults to
+        // TCP-only behavior.
+        #[cfg(feature = "iroh-transport")]
+        let shared_iroh: Option<(IrohEndpoint, ResolvedIrohRoleConfig)> = match self
+            .config
+            .iroh()
+            .cloned()
+        {
+            Some(cfg) => {
+                info!(
+                    listen_address = %cfg.listen_address,
+                    "Iroh transport configured; resolving role config and building shared Endpoint"
+                );
+                let mut resolved = cfg.resolve().map_err(|e| {
+                    error!(error = ?e, "Failed to resolve iroh role config");
+                    PoolErrorKind::Configuration(format!("iroh config resolve: {e}"))
+                })?;
+                // Pool listener registers the SV2_POOL_ALPN; when this
+                // Endpoint is reused for outbound Sv2Tp dials, the dial site
+                // names the peer's ALPN explicitly via `Endpoint::connect`,
+                // so no extra ALPNs need to be registered here.
+                resolved.endpoint_config.alpns = vec![SV2_POOL_ALPN.to_vec()];
+                let endpoint = build_endpoint(&resolved.endpoint_config).await.map_err(|e| {
+                    error!(error = ?e, "Failed to build iroh endpoint");
+                    PoolErrorKind::Io(std::io::Error::other(e.to_string()))
+                })?;
+                info!(node_id = %endpoint.node_id(), "Iroh Endpoint ready");
+                Some((endpoint, resolved))
+            }
+            None => None,
+        };
 
         // Start monitoring server if configured
         #[cfg(feature = "monitoring")]
@@ -213,6 +255,10 @@ impl PoolSv2 {
                     tp_to_channel_manager_sender,
                     cancellation_token.clone(),
                     task_manager.clone(),
+                    #[cfg(feature = "iroh-transport")]
+                    self.config.iroh_tp().cloned(),
+                    #[cfg(feature = "iroh-transport")]
+                    shared_iroh.as_ref().map(|(ep, r)| (ep.clone(), r.clone())),
                 )
                 .await?;
 
@@ -281,6 +327,8 @@ impl PoolSv2 {
                 *self.config.authority_secret_key(),
                 self.config.cert_validity_sec(),
                 *self.config.listen_address(),
+                #[cfg(feature = "iroh-transport")]
+                shared_iroh.clone(),
                 task_manager.clone(),
                 cancellation_token.clone(),
                 downstream_to_channel_manager_sender,

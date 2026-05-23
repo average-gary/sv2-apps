@@ -14,6 +14,8 @@ use std::{
 };
 
 pub use jd_server_sv2::config::{JDSConfig, JDSPartialConfig};
+#[cfg(feature = "iroh-transport")]
+use stratum_apps::network_helpers::transport::PreferTransport;
 use stratum_apps::{
     config_helpers::{opt_path_from_toml, CoinbaseRewardScript},
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
@@ -50,6 +52,52 @@ pub struct PoolConfig {
     jds: Option<JDSPartialConfig>,
     #[serde(default)]
     monitoring_cache_refresh_secs: Option<u64>,
+    /// Optional iroh-transport configuration. When present, the pool listens on
+    /// TCP AND iroh simultaneously; downstream clients can connect over either
+    /// transport. See plan §"Per-role `[iroh]` section" for the full schema.
+    ///
+    /// `PoolConfig` does NOT use `#[serde(deny_unknown_fields)]`, so when the
+    /// `iroh-transport` feature is disabled the `[iroh]` TOML section is
+    /// silently ignored rather than rejected.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh: Option<stratum_apps::network_helpers::iroh::IrohRoleConfig>,
+    /// Optional iroh-extension config for the upstream Sv2 Template Provider
+    /// dial. When `template_provider_type = Sv2Tp` and this section is present
+    /// the pool can dial the TP over iroh (with TCP fallback per
+    /// `prefer_transport`). The Sv2 authority pubkey and TCP address still
+    /// come from `[template_provider_type.Sv2Tp]` so TCP fallback works
+    /// unchanged when iroh is disabled.
+    ///
+    /// This field is pool-local rather than embedded in the
+    /// [`TemplateProviderType::Sv2Tp`] variant so the stratum-apps `tp_type`
+    /// crate does not gain a per-feature shape. Phase 4b's JDC dial sites
+    /// will follow the same pattern.
+    #[cfg(feature = "iroh-transport")]
+    #[serde(default)]
+    pub iroh_tp: Option<Sv2TpIrohExt>,
+}
+
+/// Iroh-transport extension fields for the upstream Sv2 Template Provider.
+/// Optional sibling to `[template_provider_type.Sv2Tp]` in the pool TOML.
+///
+/// When this section is omitted the pool dials its TP over plain TCP (the
+/// behavior pre-iroh, identical to today).
+#[cfg(feature = "iroh-transport")]
+#[derive(Clone, Debug, serde::Deserialize, Default)]
+pub struct Sv2TpIrohExt {
+    /// Base32-lowercase NodeId of the TP. Required to enable iroh dialing.
+    /// When `None`, the pool falls back to TCP regardless of
+    /// `prefer_transport`.
+    #[serde(default)]
+    pub iroh_node_id: Option<String>,
+    /// Optional relay URL for the TP. Empty / `None` means rely on the
+    /// connector endpoint's discovery to locate the TP.
+    #[serde(default)]
+    pub iroh_relay_url: Option<String>,
+    /// Per-peer transport preference. Defaults to `iroh_then_tcp`.
+    #[serde(default)]
+    pub prefer_transport: PreferTransport,
 }
 
 impl PoolConfig {
@@ -90,6 +138,10 @@ impl PoolConfig {
             monitoring_address,
             monitoring_cache_refresh_secs,
             jds,
+            #[cfg(feature = "iroh-transport")]
+            iroh: None,
+            #[cfg(feature = "iroh-transport")]
+            iroh_tp: None,
         }
     }
 
@@ -184,6 +236,20 @@ impl PoolConfig {
     /// Returns the monitoring cache refresh interval in seconds.
     pub fn monitoring_cache_refresh_secs(&self) -> Option<u64> {
         self.monitoring_cache_refresh_secs
+    }
+
+    /// Returns the optional iroh transport configuration.
+    #[cfg(feature = "iroh-transport")]
+    pub fn iroh(&self) -> Option<&stratum_apps::network_helpers::iroh::IrohRoleConfig> {
+        self.iroh.as_ref()
+    }
+
+    /// Returns the optional iroh-extension config for the upstream Sv2
+    /// Template Provider dial. `None` keeps the pool on the legacy TCP-only
+    /// dial path.
+    #[cfg(feature = "iroh-transport")]
+    pub fn iroh_tp(&self) -> Option<&Sv2TpIrohExt> {
+        self.iroh_tp.as_ref()
     }
 
     /// Builds a complete [`JDSConfig`] from the partial `[jds]` TOML section
