@@ -94,6 +94,80 @@ pub fn total_logical_cpus() -> u32 {
     available_parallelism().map(|p| p.get()).unwrap_or(1) as u32
 }
 
+/// Connect a mining device to a pool listening on iroh transport.
+///
+/// Mirrors [`connect`] but dials over iroh: opens a QUIC connection to the
+/// supplied [`iroh::NodeAddr`] using `SV2_POOL_ALPN`, opens a bidi stream,
+/// runs the SV2 Noise NX initiator handshake inside it, and feeds the
+/// resulting channel pair into [`Device::start`] — i.e. the post-handshake
+/// path is identical to TCP. The `Device` consumes the channel pair without
+/// caring which transport produced it.
+///
+/// Returns once the device's mining loop terminates (it normally runs
+/// forever; tests poll for shares and shut the runtime down).
+#[cfg(feature = "iroh-transport")]
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_via_iroh(
+    endpoint: iroh::Endpoint,
+    node_addr: iroh::NodeAddr,
+    pub_key: Option<Secp256k1PublicKey>,
+    device_id: Option<String>,
+    user_id: Option<String>,
+    handicap: u32,
+    nominal_hashrate_multiplier: Option<f32>,
+    single_submit: bool,
+) {
+    use std::collections::BTreeMap;
+    use stratum_apps::network_helpers::{
+        iroh::{alpn::SV2_POOL_ALPN, connector::IrohSv2Connector},
+        transport::{Sv2Connector, Sv2Target},
+    };
+
+    // Capture the bound socket address (for logs / Device::start's
+    // `addr` parameter; SetupConnection's endpoint_host/port fields fall out
+    // of this). The NodeAddr's first direct address is the natural choice;
+    // if absent, fall back to a placeholder so we at least keep the SV2
+    // SetupConnection well-formed.
+    let address: SocketAddr = node_addr
+        .direct_addresses()
+        .next()
+        .copied()
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
+
+    info!(
+        "MiningDevice (iroh): connecting to pool node {} via {}",
+        node_addr.node_id, address
+    );
+
+    let connector = IrohSv2Connector::new(
+        endpoint,
+        BTreeMap::new(),
+        SV2_POOL_ALPN,
+        Duration::from_secs(10),
+    );
+    let target = Sv2Target::Iroh {
+        node_addr,
+        authority_pubkey: pub_key,
+    };
+    let (receiver, sender) =
+        <IrohSv2Connector as Sv2Connector<Message>>::connect(&connector, &target)
+            .await
+            .expect("MiningDevice: iroh connector dial failed");
+    info!("MiningDevice (iroh): pool noise handshake complete at {}", address);
+
+    Device::start(
+        receiver,
+        sender,
+        address,
+        device_id,
+        user_id,
+        handicap,
+        nominal_hashrate_multiplier,
+        single_submit,
+    )
+    .await
+}
+
 pub async fn connect(
     address: String,
     pub_key: Option<Secp256k1PublicKey>,

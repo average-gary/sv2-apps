@@ -41,6 +41,25 @@ sha2 = { version = "0.10.6", features = ["compress", "asm"] }
 primitive-types = "0.13.1"
 num-format = "0.4"
 
+# Optional iroh dep, only used by the iroh-transport feature for the
+# fixtures in `lib/utils.rs` and the iroh mocks in `lib/mock_roles.rs`.
+# `default-features = false` mirrors the way every other crate in this
+# workspace pulls iroh in (see e.g. `stratum-apps/Cargo.toml`).
+iroh = { version = "0.91", default-features = false, optional = true }
+
+[features]
+# When this feature is on, the integration-tests lib gains the iroh fixture
+# helpers in `lib/utils.rs`, the iroh `MiningDevice` constructor, and the
+# iroh mock-roles. Activates the matching feature on every dependency that
+# carries iroh code so per-role test files see a consistent build.
+iroh-transport = [
+    "stratum-apps/iroh-transport",
+    "pool_sv2/iroh-transport",
+    "jd_client_sv2/iroh-transport",
+    "translator_sv2/iroh-transport",
+    "dep:iroh",
+]
+
 [dev-dependencies]
 # Dev-only dependencies kept only for `mining_device` test/bench coverage.
 # Remove together with the `mining_device` benches/test listed below.
