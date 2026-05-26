@@ -4,14 +4,18 @@
 //! for Stratum V2 applications. It includes support for:
 //!
 //! - Noise-encrypted connections ([`noise_connection`], [`noise_stream`])
+//! - Generic Noise streams over any `AsyncRead + AsyncWrite` ([`noise_generic_stream`])
+//! - Transport-agnostic connect/accept abstraction ([`transport`])
 //! - SV1 protocol connections ([`sv1_connection`]) - when `sv1` feature is enabled
 //! - Hostname resolution ([`resolve_hostname`])
 //!
 //! Originally from the `network_helpers_sv2` crate.
 
 pub mod noise_connection;
+pub mod noise_generic_stream;
 pub mod noise_stream;
 pub mod resolve_hostname;
+pub mod transport;
 
 #[cfg(feature = "sv1")]
 pub mod sv1_connection;
@@ -19,7 +23,7 @@ pub mod sv1_connection;
 pub use resolve_hostname::{resolve_host, resolve_host_port, ResolveError};
 
 use async_channel::{RecvError, SendError};
-use std::{fmt, time::Duration};
+use std::{fmt, net::SocketAddr, time::Duration};
 use stratum_core::{
     binary_sv2::{Deserialize, GetSize, Serialize},
     codec_sv2::{Error as CodecError, HandshakeRole},
@@ -51,6 +55,12 @@ pub enum Error {
     InvalidKey,
     /// DNS resolution failed for a hostname
     DnsResolutionFailed(String),
+    /// Failed to bind a listener (e.g. address in use, permission denied).
+    BindFailed(String),
+    /// Outbound TCP connect timed out before the OS-level connect completed.
+    TcpConnectTimeout(SocketAddr),
+    /// Outbound TCP connect failed (refused, unreachable, etc.).
+    TcpConnectFailed(String),
 }
 
 impl fmt::Display for Error {
@@ -73,6 +83,12 @@ impl fmt::Display for Error {
             Error::InvalidKey => write!(f, "Invalid key provided for handshake"),
 
             Error::DnsResolutionFailed(msg) => write!(f, "DNS resolution failed: {msg}"),
+
+            Error::BindFailed(msg) => write!(f, "bind failed: {msg}"),
+
+            Error::TcpConnectTimeout(addr) => write!(f, "tcp connect to {addr} timed out"),
+
+            Error::TcpConnectFailed(msg) => write!(f, "tcp connect failed: {msg}"),
         }
     }
 }

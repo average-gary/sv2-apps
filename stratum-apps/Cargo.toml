@@ -24,6 +24,8 @@ async-channel = { version = "1.8.0" }
 tokio = { version = "1.44.1", features = ["full"] }
 futures = { version = "0.3.28" }
 tokio-util = { version = "0.7.10", default-features = false, features = ["codec"], optional = true }
+# Transport-trait abstraction (always required; used by `network_helpers::transport`).
+async-trait = { version = "0.1" }
 
 # Config helpers dependencies
 serde = { version = "1.0.89", features = ["derive", "alloc"], default-features = false }
