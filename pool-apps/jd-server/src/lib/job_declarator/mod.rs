@@ -27,7 +27,7 @@ use std::{
 use stratum_apps::{
     config_helpers::CoinbaseRewardScript,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
-    network_helpers::accept_noise_connection,
+    network_helpers::transport::{Sv2Listener, TcpSv2Listener},
     stratum_core::{
         handlers_sv2::HandleJobDeclarationMessagesFromClientAsync,
         mining_sv2::{
@@ -37,9 +37,8 @@ use stratum_apps::{
         parsers_sv2::{JobDeclaration, Tlv},
     },
     task_manager::TaskManager,
-    utils::types::{DownstreamId, JdToken},
+    utils::types::{DownstreamId, JdToken, Message},
 };
-use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
 
 // see https://github.com/stratum-mining/sv2-apps/issues/335
@@ -191,13 +190,21 @@ impl JobDeclarator {
         required_extensions: Vec<u16>,
     ) -> JDSResult<(), error::JobDeclarator> {
         info!("Starting downstream server at {listening_address}");
-        let server = TcpListener::bind(listening_address)
+        let listener: Arc<dyn Sv2Listener<Message>> = Arc::new(
+            TcpSv2Listener::bind(
+                listening_address,
+                authority_public_key,
+                authority_secret_key,
+                cert_validity_sec,
+            )
             .await
             .map_err(|e| {
                 error!(error = ?e, "Failed to bind downstream server at {listening_address}");
-                e
-            })
-            .map_err(JDSError::shutdown)?;
+                JDSError::shutdown(JDSErrorKind::InvalidConfig(format!(
+                    "TcpSv2Listener::bind {listening_address}: {e}"
+                )))
+            })?,
+        );
 
         let task_manager_clone = task_manager.clone();
         let cancellation_token_clone = cancellation_token.clone();
@@ -208,10 +215,10 @@ impl JobDeclarator {
                         info!("Job Declarator: cancellation token triggered");
                         break;
                     }
-                    res = server.accept() => {
+                    res = listener.accept() => {
                         match res {
-                            Ok((stream, socket_address)) => {
-                                info!(%socket_address, "New downstream connection");
+                            Ok((peer_identity, conn_pair)) => {
+                                info!(?peer_identity, "New downstream connection");
 
                                 let this = self.clone();
                                 let cancellation_token_inner = cancellation_token_clone.clone();
@@ -220,27 +227,6 @@ impl JobDeclarator {
                                 let required_extensions_inner = required_extensions.clone();
 
                                 task_manager_clone.spawn(async move {
-                                    let noise_stream = tokio::select! {
-                                        result = accept_noise_connection(
-                                            stream,
-                                            authority_public_key,
-                                            authority_secret_key,
-                                            cert_validity_sec,
-                                        ) => {
-                                            match result {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    error!(error = ?e, "Noise handshake failed");
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                        _ = cancellation_token_inner.cancelled() => {
-                                            info!("Shutdown received during handshake, dropping connection");
-                                            return;
-                                        }
-                                    };
-
                                     let downstream_id = this
                                         .downstream_id_factory
                                         .fetch_add(1, Ordering::SeqCst);
@@ -252,7 +238,7 @@ impl JobDeclarator {
 
                                     let downstream = Downstream::new(
                                         downstream_id,
-                                        noise_stream,
+                                        conn_pair,
                                         to_job_declarator_sender,
                                         to_downstream_receiver,
                                         supported_extensions_inner,

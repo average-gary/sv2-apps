@@ -11,7 +11,7 @@ use super::{
 use crate::{
     error,
     error::{JDSResult, LoopControl},
-    io_task::spawn_io_tasks,
+    io_task::spawn_conn_pair_bridge_tasks,
 };
 use async_channel::{unbounded, Receiver, Sender};
 use bitcoin_core_sv2::job_declaration_protocol::CancellationToken;
@@ -22,7 +22,7 @@ use std::{
 };
 use stratum_apps::{
     custom_mutex::Mutex,
-    network_helpers::noise_stream::NoiseTcpStream,
+    network_helpers::transport::ConnPair,
     stratum_core::{
         common_messages_sv2::MESSAGE_TYPE_SETUP_CONNECTION,
         framing_sv2,
@@ -110,11 +110,19 @@ impl Downstream {
         }
     }
 
-    /// Creates a new [`Downstream`] and spawns its Noise I/O tasks.
+    /// Creates a new [`Downstream`] and spawns its transport I/O bridge tasks.
+    ///
+    /// `conn_pair` is the [`ConnPair<Message>`] returned by
+    /// [`Sv2Listener::accept`](stratum_apps::network_helpers::transport::Sv2Listener::accept) —
+    /// the SV2 Noise NX handshake has already completed inside the listener.
+    /// The byte-pump handoff into JDS's existing [`Sv2Frame`] channels is done
+    /// by [`spawn_conn_pair_bridge_tasks`], which translates between
+    /// [`stratum_apps::stratum_core::codec_sv2::StandardEitherFrame`] and the
+    /// inner [`Sv2Frame`] type the rest of [`Downstream`] consumes.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         downstream_id: DownstreamId,
-        noise_stream: NoiseTcpStream<Message>,
+        conn_pair: ConnPair<Message>,
         to_job_declarator_sender: Sender<DownstreamJobDeclarationMessage>,
         from_job_declarator_receiver: Receiver<JobDeclarationMessage>,
         supported_extensions: Vec<u16>,
@@ -122,16 +130,14 @@ impl Downstream {
         task_manager: Arc<TaskManager>,
         global_cancellation_token: CancellationToken,
     ) -> Self {
-        let (noise_stream_reader, noise_stream_writer) = noise_stream.into_split();
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
         let downstream_cancellation_token = global_cancellation_token.child_token();
 
-        spawn_io_tasks(
+        spawn_conn_pair_bridge_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            conn_pair,
             outbound_rx,
             inbound_tx,
             downstream_cancellation_token.clone(),
