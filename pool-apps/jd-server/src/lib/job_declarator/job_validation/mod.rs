@@ -2,7 +2,7 @@
 
 use stratum_apps::{
     stratum_core::{
-        bitcoin::Wtxid,
+        bitcoin::{BlockHash, Wtxid},
         job_declaration_sv2::{DeclareMiningJob, ProvideMissingTransactionsSuccess, PushSolution},
         mining_sv2::SetCustomMiningJob,
     },
@@ -50,6 +50,19 @@ pub trait JobValidationEngine: Send + Sync {
     /// Default implementation is a no-op so non-threaded engines do not need to
     /// implement custom teardown.
     fn shutdown(&self) {}
+
+    /// Notify the engine that the underlying share-chain tip has changed.
+    ///
+    /// Backends that don't track a share-chain ignore this. Backends that
+    /// cache validated declared jobs against a specific tip should invalidate
+    /// any in-flight tokens whose ancestry no longer matches the new tip.
+    ///
+    /// The default implementation is a no-op; only p2pool-style engines that
+    /// build coinbases against a side-chain tip need to override it.
+    /// `BitcoinCoreIPCEngine` does not need to override because it tracks the
+    /// Bitcoin chain tip via `validation_context_drifted` on each
+    /// `DeclareMiningJob` round, not via an external share-chain.
+    async fn notify_share_chain_reorg(&self, _new_tip: BlockHash) {}
 }
 
 /// Result of a [`JobValidationEngine::handle_declare_mining_job`] call.

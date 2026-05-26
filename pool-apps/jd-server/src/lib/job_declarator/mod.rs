@@ -343,6 +343,21 @@ impl JobDeclarator {
         info!("JobDeclarator: shutdown complete");
     }
 
+    /// Forward a share-chain tip-change notification to the
+    /// [`JobValidationEngine`] backend.
+    ///
+    /// This is a thin pass-through hosted on `JobDeclarator` so callers that
+    /// only hold a `JobDeclarator` (rather than a separate
+    /// `Arc<dyn JobValidationEngine>` clone) can still drive the hook. The
+    /// default trait implementation is a no-op for backends that do not track
+    /// a share-chain (e.g. `BitcoinCoreIPCEngine`).
+    pub async fn notify_share_chain_reorg(
+        &self,
+        new_tip: stratum_apps::stratum_core::bitcoin::BlockHash,
+    ) {
+        self.job_validator.notify_share_chain_reorg(new_tip).await;
+    }
+
     /// Removes a downstream from all internal maps and cleans up its tokens.
     fn cleanup_downstream(&self, downstream_id: DownstreamId) {
         info!(downstream_id, "Cleaning up disconnected downstream");
