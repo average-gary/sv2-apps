@@ -5,7 +5,10 @@ use bitcoin_core_sv2::template_distribution_protocol::CancellationToken;
 use stratum_apps::{
     channel_utils::ReceiverCleanup,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::{connect_with_noise, resolve_host, TCP_CONNECT_TIMEOUT},
+    network_helpers::{
+        resolve_host,
+        transport::{Sv2Connector, Sv2Target, TcpSv2Connector},
+    },
     stratum_core::{
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,
@@ -17,12 +20,11 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl},
-    io_task::spawn_io_tasks,
+    io_task::spawn_conn_pair_bridge_tasks,
     jd_mode::JDMode,
     utils::{get_setup_connection_message_jds, UpstreamEntry},
 };
@@ -144,30 +146,30 @@ impl JobDeclarator {
             })?;
 
         info!("Connecting to JD Server at {addr}");
-        let stream = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
-            .await
-            .map_err(JDCError::fallback)?
-            .map_err(JDCError::fallback)?;
-        info!("Connection established with JD Server at {addr} in mode: {mode:?}");
+        let connector = TcpSv2Connector;
+        let target = Sv2Target::Tcp {
+            addr,
+            authority_pubkey: Some(upstream_entry.authority_pubkey),
+        };
 
-        let (noise_stream_reader, noise_stream_writer) = tokio::select! {
+        let conn_pair = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
-                info!("Shutdown received during handshake, dropping connection");
+                info!("Shutdown received during dial, dropping connection");
                 return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
             }
-            result = connect_with_noise(stream, Some(upstream_entry.authority_pubkey)) => {
-                result.map_err(JDCError::fallback)?.into_split()
+            result = <TcpSv2Connector as Sv2Connector<Message>>::connect(&connector, &target) => {
+                result.map_err(JDCError::fallback)?
             }
         };
+        info!("Connection established with JD Server at {addr} in mode: {mode:?}");
 
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
-        spawn_io_tasks(
+        spawn_conn_pair_bridge_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            conn_pair,
             outbound_rx,
             inbound_tx,
             cancellation_token,

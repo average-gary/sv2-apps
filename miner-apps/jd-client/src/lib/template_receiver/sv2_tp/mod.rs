@@ -17,7 +17,10 @@ use bitcoin_core_sv2::template_distribution_protocol::CancellationToken;
 use stratum_apps::{
     channel_utils::ReceiverCleanup,
     key_utils::Secp256k1PublicKey,
-    network_helpers::{self, connect_with_noise, resolve_host_port, TCP_CONNECT_TIMEOUT},
+    network_helpers::{
+        self, resolve_host_port,
+        transport::{Sv2Connector, Sv2Target, TcpSv2Connector},
+    },
     stratum_core::{
         framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync,
@@ -30,12 +33,11 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::{net::TcpStream, time::timeout};
 use tracing::{debug, error, info, warn};
 
 use crate::{
     error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl},
-    io_task::spawn_io_tasks,
+    io_task::spawn_conn_pair_bridge_tasks,
     utils::get_setup_connection_message_tp,
 };
 
@@ -141,73 +143,66 @@ impl Sv2Tp {
     ) -> JDCResult<Sv2Tp, error::TemplateProvider> {
         const MAX_RETRIES: usize = 3;
 
+        // Resolve once; reuse the resolved target on every retry.
+        let addr = resolve_host_port(&tp_address).await.map_err(|e| {
+            error!(%tp_address, "Failed to resolve template provider address: {e}");
+            JDCError::shutdown(JDCErrorKind::InvalidSocketAddress(tp_address.clone()))
+        })?;
+        let target = Sv2Target::Tcp {
+            addr,
+            authority_pubkey: public_key,
+        };
+        let connector = TcpSv2Connector;
+
         for attempt in 1..=MAX_RETRIES {
-            info!(attempt, MAX_RETRIES, "Connecting to template provider");
+            info!(attempt, MAX_RETRIES, ?target, "Connecting to template provider");
 
-            match timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(tp_address.as_str()))
-                .await
-                .map_err(JDCError::shutdown)?
-            {
-                Ok(stream) => {
-                    info!(
-                        attempt,
-                        "TCP connection established, starting Noise handshake"
-                    );
+            tokio::select! {
+                biased;
+                _ = cancellation_token.cancelled() => {
+                    info!("Shutdown received during dial, aborting");
+                    return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
+                }
+                result = <TcpSv2Connector as Sv2Connector<Message>>::connect(&connector, &target) => {
+                    match result {
+                        Ok(conn_pair) => {
+                            info!(attempt, "Sv2Connector::connect succeeded");
 
-                    tokio::select! {
-                        biased;
+                            let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
+                            let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
-                         _ = cancellation_token.cancelled() => {
-                            info!("Shutdown received during handshake, dropping connection");
-                            return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
+                            info!(attempt, "Spawning IO bridge tasks for template receiver");
+                            // No fallback coordinator here: TP failures do not
+                            // participate in upstream-fallback rebinding.
+                            spawn_conn_pair_bridge_tasks(
+                                task_manager.clone(),
+                                conn_pair,
+                                outbound_rx,
+                                inbound_tx,
+                                cancellation_token.clone(),
+                                None,
+                            );
+
+                            let sv2_tp_io = Sv2TpIo {
+                                channel_manager_receiver,
+                                channel_manager_sender,
+                                tp_receiver: inbound_rx,
+                                tp_sender: outbound_tx,
+                            };
+
+                            info!(attempt, "TemplateReceiver initialized successfully");
+                            return Ok(Sv2Tp {
+                                sv2_tp_io,
+                                tp_address,
+                            });
                         }
-                        result = connect_with_noise(stream, public_key) => {
-                            match result {
-                                Ok(noise_stream) => {
-                                    info!(attempt, "Noise handshake completed successfully");
-
-                                    let (noise_stream_reader, noise_stream_writer) =
-                                        noise_stream.into_split();
-
-                                    let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
-                                    let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
-
-                                    info!(attempt, "Spawning IO tasks for template receiver");
-                                    spawn_io_tasks(
-                                        task_manager.clone(),
-                                        noise_stream_reader,
-                                        noise_stream_writer,
-                                        outbound_rx,
-                                        inbound_tx,
-                                        cancellation_token.clone(),
-                                        None,
-                                    );
-
-                                    let sv2_tp_io = Sv2TpIo {
-                                        channel_manager_receiver,
-                                        channel_manager_sender,
-                                        tp_receiver: inbound_rx,
-                                        tp_sender: outbound_tx,
-                                    };
-
-                                    info!(attempt, "TemplateReceiver initialized successfully");
-                                    return Ok(Sv2Tp {
-                                        sv2_tp_io,
-                                        tp_address,
-                                    });
-                                }
-                                Err(network_helpers::Error::InvalidKey) => {
-                                    return Err(JDCError::shutdown(JDCErrorKind::InvalidKey));
-                                }
-                                Err(e) => {
-                                    error!(attempt, error = ?e, "Noise handshake failed");
-                                }
-                            }
+                        Err(network_helpers::Error::InvalidKey) => {
+                            return Err(JDCError::shutdown(JDCErrorKind::InvalidKey));
+                        }
+                        Err(e) => {
+                            warn!(attempt, MAX_RETRIES, error = ?e, "Sv2Connector::connect failed");
                         }
                     }
-                }
-                Err(e) => {
-                    warn!(attempt, MAX_RETRIES, error = ?e, "Failed to connect to template provider");
                 }
             }
 

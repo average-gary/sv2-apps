@@ -15,7 +15,7 @@ use stratum_apps::{
     custom_mutex::Mutex,
     fallback_coordinator::FallbackCoordinator,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
-    network_helpers::accept_noise_connection,
+    network_helpers::transport::{Sv2Listener, TcpSv2Listener},
     stratum_core::{
         bitcoin::{consensus, Amount, Target, TxOut},
         channels_sv2::{
@@ -49,12 +49,12 @@ use stratum_apps::{
     utils::{
         protocol_message_type::{protocol_message_type, MessageType},
         types::{
-            ChannelId, DownstreamId, RequestId, SharesBatchSize, SharesPerMinute, Sv2Frame,
-            TemplateId, UpstreamJobId, VardiffKey,
+            ChannelId, DownstreamId, Message, RequestId, SharesBatchSize, SharesPerMinute,
+            Sv2Frame, TemplateId, UpstreamJobId, VardiffKey,
         },
     },
 };
-use tokio::{net::TcpListener, select};
+use tokio::select;
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -564,10 +564,19 @@ impl ChannelManager {
         }
 
         info!("Starting downstream server at {listening_address}");
-        let server = TcpListener::bind(listening_address).await.map_err(|e| {
-            error!(error = ?e, "Failed to bind downstream server at {listening_address}");
-            JDCError::shutdown(e)
-        })?;
+        let listener: Arc<dyn Sv2Listener<Message>> = Arc::new(
+            TcpSv2Listener::bind(
+                listening_address,
+                authority_public_key,
+                authority_secret_key,
+                cert_validity_sec,
+            )
+            .await
+            .map_err(|e| {
+                error!(error = ?e, "Failed to bind downstream server at {listening_address}");
+                JDCError::shutdown(JDCErrorKind::NetworkHelpersError(e))
+            })?,
+        );
 
         let task_manager_clone = task_manager.clone();
         // Register the listener task in fallback coordination, so fallback waits
@@ -584,10 +593,10 @@ impl ChannelManager {
                         info!("Downstream Server: received fallback signal");
                         break;
                     }
-                    res = server.accept() => {
+                    res = listener.accept() => {
                         match res {
-                            Ok((stream, socket_address)) => {
-                                info!(%socket_address, "New downstream connection");
+                            Ok((peer_identity, conn_pair)) => {
+                                info!(?peer_identity, "New downstream connection");
 
                                 let this = Arc::clone(&this);
                                 let cancellation_token_inner = cancellation_token.clone();
@@ -598,23 +607,6 @@ impl ChannelManager {
                                 let required_extensions_inner = required_extensions.clone();
 
                                 task_manager_clone.spawn(async move {
-                                    let noise_stream = tokio::select! {
-                                        biased;
-                                        _ = cancellation_token_inner.cancelled() => {
-                                            info!("Shutdown received during handshake, dropping connection");
-                                            return;
-                                        }
-                                        result = accept_noise_connection(stream, authority_public_key, authority_secret_key, cert_validity_sec) => {
-                                            match result {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    error!(error = ?e, "Noise handshake failed");
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    };
-
                                     let downstream_id = this.channel_manager_data
                                         .super_safe_lock(|data| data.downstream_id_factory.fetch_add(1, Ordering::Relaxed));
 
@@ -638,7 +630,7 @@ impl ChannelManager {
                                         group_channel,
                                         channel_manager_sender_inner,
                                         channel_manager_receiver_downstream,
-                                        noise_stream,
+                                        conn_pair,
                                         cancellation_token_inner.clone(),
                                         fallback_coordinator_inner.clone(),
                                         task_manager_inner.clone(),

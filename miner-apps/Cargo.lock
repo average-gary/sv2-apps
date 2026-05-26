@@ -2435,6 +2435,7 @@ name = "stratum-apps"
 version = "0.5.0"
 dependencies = [
  "async-channel",
+ "async-trait",
  "axum",
  "bs58",
  "config",

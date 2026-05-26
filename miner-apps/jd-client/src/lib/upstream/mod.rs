@@ -16,7 +16,10 @@ use bitcoin_core_sv2::template_distribution_protocol::CancellationToken;
 use stratum_apps::{
     channel_utils::ReceiverCleanup,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::{connect_with_noise, resolve_host, TCP_CONNECT_TIMEOUT},
+    network_helpers::{
+        resolve_host,
+        transport::{Sv2Connector, Sv2Target, TcpSv2Connector},
+    },
     stratum_core::{
         binary_sv2::Seq064K, extensions_sv2::RequestExtensions, framing_sv2,
         handlers_sv2::HandleCommonMessagesFromServerAsync, parsers_sv2::AnyMessage,
@@ -27,12 +30,11 @@ use stratum_apps::{
         types::{Message, Sv2Frame},
     },
 };
-use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     error::{self, Action, JDCError, JDCErrorKind, JDCResult, LoopControl},
-    io_task::spawn_io_tasks,
+    io_task::spawn_conn_pair_bridge_tasks,
     utils::{get_setup_connection_message, UpstreamEntry},
 };
 
@@ -155,41 +157,38 @@ impl Upstream {
                 JDCError::fallback(JDCErrorKind::NetworkHelpersError(e.into()))
             })?;
 
-        let stream = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
-            .await
-            .map_err(JDCError::fallback)?
-            .map_err(JDCError::fallback)?;
-        info!("Connected to upstream at {}", addr);
-        debug!("Begin with noise setup in upstream connection");
+        info!("Connecting to upstream at {addr}");
+        let connector = TcpSv2Connector;
+        let target = Sv2Target::Tcp {
+            addr,
+            authority_pubkey: Some(upstream_entry.authority_pubkey),
+        };
 
-        let (noise_stream_reader, noise_stream_writer) = tokio::select! {
+        let conn_pair = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
-                info!("Shutdown received during handshake, dropping connection");
-                Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem))
+                info!("Shutdown received during dial, dropping connection");
+                return Err(JDCError::shutdown(JDCErrorKind::CouldNotInitiateSystem));
             }
-            result = connect_with_noise(stream, Some(upstream_entry.authority_pubkey)) => {
-                match result {
-                    Ok(noise_stream) => Ok(noise_stream.into_split()),
-                    Err(e) => Err(JDCError::fallback(e))
-                }
+            result = <TcpSv2Connector as Sv2Connector<Message>>::connect(&connector, &target) => {
+                result.map_err(JDCError::fallback)?
             }
-        }?;
+        };
+        info!("Connected to upstream at {addr}");
 
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
-        spawn_io_tasks(
+        spawn_conn_pair_bridge_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            conn_pair,
             outbound_rx,
             inbound_tx,
             cancellation_token.clone(),
             Some(fallback_coordinator.clone()),
         );
 
-        debug!("Noise setup done in upstream connection");
+        debug!("Sv2Connector::connect handshake done in upstream connection");
         let upstream_io = UpstreamIo {
             channel_manager_receiver,
             channel_manager_sender,
