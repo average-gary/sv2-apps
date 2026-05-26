@@ -16,7 +16,7 @@ use stratum_apps::{
     config_helpers::CoinbaseRewardScript,
     custom_mutex::Mutex,
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
-    network_helpers::accept_noise_connection,
+    network_helpers::transport::{Sv2Listener, TcpSv2Listener},
     stratum_core::{
         bitcoin::{Amount, TxOut},
         channels_sv2::{
@@ -37,9 +37,9 @@ use stratum_apps::{
         template_distribution_sv2::{NewTemplate, SetNewPrevHash},
     },
     task_manager::TaskManager,
-    utils::types::{ChannelId, DownstreamId, SharesPerMinute, VardiffKey},
+    utils::types::{ChannelId, DownstreamId, Message, SharesPerMinute, VardiffKey},
 };
-use tokio::{net::TcpListener, select};
+use tokio::select;
 use tracing::{debug, error, info, warn};
 
 use jd_server_sv2::job_declarator::JobDeclarator;
@@ -307,13 +307,19 @@ impl ChannelManager {
         }
 
         info!("Starting downstream server at {listening_address}");
-        let server = TcpListener::bind(listening_address)
+        let listener: Arc<dyn Sv2Listener<Message>> = Arc::new(
+            TcpSv2Listener::bind(
+                listening_address,
+                authority_public_key,
+                authority_secret_key,
+                cert_validity_sec,
+            )
             .await
             .map_err(|e| {
-                error!(error = ?e, "Failed to bind downstream server at {listening_address}");
-                e
-            })
-            .map_err(PoolError::shutdown)?;
+                error!(error = ?e, "Failed to bind downstream listener at {listening_address}");
+                PoolError::shutdown(PoolErrorKind::Io(std::io::Error::other(e.to_string())))
+            })?,
+        );
 
         let task_manager_clone = task_manager.clone();
         let cancellation_token_clone = cancellation_token.clone();
@@ -325,10 +331,10 @@ impl ChannelManager {
                         info!("Channel Manager: received shutdown signal");
                         break;
                     }
-                    res = server.accept() => {
+                    res = listener.accept() => {
                         match res {
-                            Ok((stream, socket_address)) => {
-                                info!(%socket_address, "New downstream connection");
+                            Ok((peer_identity, conn_pair)) => {
+                                info!(?peer_identity, "New downstream connection");
 
                                 let this = Arc::clone(&this);
                                 let cancellation_token_inner = cancellation_token_clone.clone();
@@ -337,22 +343,6 @@ impl ChannelManager {
 
                                 task_manager_clone.spawn(async move {
                                     let cancellation_token_clone = cancellation_token_inner.clone();
-                                    let noise_stream = tokio::select! {
-                                        biased;
-                                        _ = cancellation_token_inner.cancelled() => {
-                                            info!("Shutdown received during handshake, dropping connection");
-                                            return;
-                                        }
-                                        result = accept_noise_connection(stream, authority_public_key, authority_secret_key, cert_validity_sec) => {
-                                            match result {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    error!(error = ?e, "Noise handshake failed");
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    };
 
                                     let downstream_id = this.channel_manager_data
                                         .super_safe_lock(|data| data.downstream_id_factory.fetch_add(1, Ordering::SeqCst));
@@ -377,7 +367,7 @@ impl ChannelManager {
                                         group_channel,
                                         channel_manager_sender_inner,
                                         channel_manager_receiver,
-                                        noise_stream,
+                                        conn_pair,
                                         cancellation_token_inner.clone(),
                                         task_manager_inner.clone(),
                                         this.supported_extensions.clone(),

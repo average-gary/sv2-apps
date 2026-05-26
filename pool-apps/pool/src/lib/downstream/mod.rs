@@ -11,7 +11,7 @@ use bitcoin_core_sv2::template_distribution_protocol::CancellationToken;
 use stratum_apps::{
     channel_utils::ReceiverCleanup,
     custom_mutex::Mutex,
-    network_helpers::noise_stream::NoiseTcpStream,
+    network_helpers::transport::ConnPair,
     stratum_core::{
         channels_sv2::server::{
             extended::ExtendedChannel,
@@ -34,7 +34,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     error::{self, Action, LoopControl, PoolError, PoolErrorKind, PoolResult},
-    io_task::spawn_io_tasks,
+    io_task::spawn_conn_pair_bridge_tasks,
     utils::PayoutMode,
 };
 
@@ -150,6 +150,15 @@ impl Downstream {
     }
 
     /// Creates a new [`Downstream`] instance and spawns the necessary I/O tasks.
+    ///
+    /// `conn_pair` is the framed channel pair returned by
+    /// [`stratum_apps::network_helpers::transport::Sv2Listener::accept`]. The
+    /// transport (TCP+Noise) has already completed its handshake and is
+    /// pumping frames between the wire and the channels; this constructor
+    /// wires the rest of the pool downstream-handling logic onto that pair
+    /// via [`spawn_conn_pair_bridge_tasks`], which translates between
+    /// [`stratum_apps::stratum_core::codec_sv2::StandardEitherFrame`] and the
+    /// [`Sv2Frame`] inner type the rest of [`Downstream`] consumes.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         downstream_id: DownstreamId,
@@ -157,23 +166,21 @@ impl Downstream {
         group_channel: GroupChannel<'static, DefaultJobStore<ExtendedJob<'static>>>,
         channel_manager_sender: Sender<(DownstreamId, Mining<'static>, Option<Vec<Tlv>>)>,
         channel_manager_receiver: Receiver<(Mining<'static>, Option<Vec<Tlv>>)>,
-        noise_stream: NoiseTcpStream<Message>,
+        conn_pair: ConnPair<Message>,
         cancellation_token: CancellationToken,
         task_manager: Arc<TaskManager>,
         supported_extensions: Vec<u16>,
         required_extensions: Vec<u16>,
     ) -> Self {
-        let (noise_stream_reader, noise_stream_writer) = noise_stream.into_split();
         let (inbound_tx, inbound_rx) = unbounded::<Sv2Frame>();
         let (outbound_tx, outbound_rx) = unbounded::<Sv2Frame>();
 
         // Create a per-connection child token so we can cancel this
         // connection's I/O tasks independently of the global shutdown.
         let downstream_connection_token = cancellation_token.child_token();
-        spawn_io_tasks(
+        spawn_conn_pair_bridge_tasks(
             task_manager,
-            noise_stream_reader,
-            noise_stream_writer,
+            conn_pair,
             outbound_rx,
             inbound_tx,
             downstream_connection_token.clone(),
