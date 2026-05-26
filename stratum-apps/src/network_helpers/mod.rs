@@ -17,6 +17,9 @@ pub mod noise_stream;
 pub mod resolve_hostname;
 pub mod transport;
 
+#[cfg(feature = "test-utils")]
+pub mod transport_test_utils;
+
 #[cfg(feature = "sv1")]
 pub mod sv1_connection;
 

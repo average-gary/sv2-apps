@@ -80,6 +80,12 @@ translator = ["network", "fallback-coordinator", "config", "sv1", "with_buffer_p
 # Note: mining_device intentionally excludes 'core' and 'network' - it uses crates.io crates directly
 mining_device = ["config"]
 
+# Test-only utilities. Gates `network_helpers::transport_test_utils`, which
+# provides an in-memory `Sv2Connector`/`Sv2Listener` pair backed by
+# `tokio::io::duplex` for tests that want to exercise the transport
+# abstraction without allocating TCP ports.
+test-utils = ["network"]
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
