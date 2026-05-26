@@ -13,6 +13,16 @@ keywords = ["stratum", "mining", "bitcoin", "protocol"]
 
 exclude = ["resources/high_diff_chain.tar.gz"]
 
+[features]
+default = ["test-utils"]
+# Enables the in-memory `Sv2Connector` / `Sv2Listener` pair from
+# `stratum-apps::network_helpers::transport_test_utils`, plus the
+# `MockUpstream::new_in_memory` / `MockDownstream::new_with_in_memory_connector`
+# constructors that wire those into the integration-tests fixtures. Always on
+# by default because the integration-tests crate is dev-only — no production
+# cost to enabling it unconditionally.
+test-utils = ["stratum-apps/test-utils"]
+
 [dependencies]
 stratum-apps = { version = "0.5.0", path = "../stratum-apps", features = ["network", "config", "payout"] }
 jd_client_sv2 = { version = "0.3.0", path = "../miner-apps/jd-client" }
