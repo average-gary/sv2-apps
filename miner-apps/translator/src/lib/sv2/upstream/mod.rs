@@ -2,7 +2,7 @@ pub mod common_message_handler;
 
 use crate::{
     error::{self, Action, LoopControl, TproxyError, TproxyErrorKind, TproxyResult},
-    io_task::spawn_io_tasks,
+    io_task::spawn_conn_pair_bridge_tasks,
     utils::UpstreamEntry,
 };
 use async_channel::{unbounded, Receiver, Sender};
@@ -10,7 +10,10 @@ use std::{net::SocketAddr, sync::Arc};
 use stratum_apps::{
     channel_utils::ReceiverCleanup,
     fallback_coordinator::FallbackCoordinator,
-    network_helpers::{self, connect_with_noise, resolve_host, TCP_CONNECT_TIMEOUT},
+    network_helpers::{
+        resolve_host,
+        transport::{Sv2Connector, Sv2Target, TcpSv2Connector},
+    },
     stratum_core::{
         binary_sv2::Seq064K,
         common_messages_sv2::{Protocol, SetupConnection},
@@ -25,7 +28,6 @@ use stratum_apps::{
     },
 };
 
-use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -198,75 +200,58 @@ impl Upstream {
                 TproxyError::fallback(TproxyErrorKind::NetworkHelpersError(e.into()))
             })?;
 
-        match tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(resolved_addr))
-            .await
-            .map_err(TproxyError::fallback)?
-        {
-            Ok(socket) => {
-                info!("Connected to upstream at {}", resolved_addr);
+        let connector = TcpSv2Connector;
+        let target = Sv2Target::Tcp {
+            addr: resolved_addr,
+            authority_pubkey: Some(upstream.authority_pubkey),
+        };
 
-                tokio::select! {
-                    biased;
-                    _ = cancellation_token.cancelled() => {
-                        info!("Shutdown received during handshake, dropping connection");
-                        Err(TproxyError::shutdown(TproxyErrorKind::CouldNotInitiateSystem))
-                    }
-                    result = connect_with_noise(socket, Some(upstream.authority_pubkey)) => {
-                        match result {
-                            Ok(stream) => {
-                                let (reader, writer) = stream.into_split();
-
-                                let (outbound_tx, outbound_rx) = unbounded();
-                                let (inbound_tx, inbound_rx) = unbounded();
-
-                                spawn_io_tasks(
-                                    task_manager,
-                                    reader,
-                                    writer,
-                                    outbound_rx,
-                                    inbound_tx,
-                                    cancellation_token.clone(),
-                                    fallback_coordinator.clone(),
-                                );
-
-                                let upstream_io = UpstreamIo::new(
-                                    inbound_rx,
-                                    outbound_tx,
-                                    channel_manager_sender,
-                                    channel_manager_receiver,
-                                );
-                                debug!(
-                                    "Successfully initialized upstream channel with {}",
-                                    resolved_addr
-                                );
-
-                                Ok(Self {
-                                    upstream_io,
-                                    required_extensions: required_extensions.clone(),
-                                    address: resolved_addr,
-                                })
-                            }
-                            Err(network_helpers::Error::InvalidKey) => {
-                                Err(TproxyError::fallback(TproxyErrorKind::InvalidKey))
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed Noise handshake with {}: {e}.",
-                                    resolved_addr
-                                );
-                                Err(TproxyError::fallback(
-                                    TproxyErrorKind::NetworkHelpersError(e),
-                                ))
-                            }
-                        }
+        let conn_pair = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => {
+                info!("Shutdown received during dial, dropping connection");
+                return Err(TproxyError::shutdown(TproxyErrorKind::CouldNotInitiateSystem));
+            }
+            result = <TcpSv2Connector as Sv2Connector<Message>>::connect(&connector, &target) => {
+                match result {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        error!("Failed to connect to {}: {e}.", resolved_addr);
+                        return Err(TproxyError::fallback(TproxyErrorKind::NetworkHelpersError(e)));
                     }
                 }
             }
-            Err(e) => {
-                error!("Failed to connect to {}: {e}.", resolved_addr);
-                Err(TproxyError::fallback(e))
-            }
-        }
+        };
+        info!("Connected to upstream at {}", resolved_addr);
+
+        let (outbound_tx, outbound_rx) = unbounded();
+        let (inbound_tx, inbound_rx) = unbounded();
+
+        spawn_conn_pair_bridge_tasks(
+            task_manager,
+            conn_pair,
+            outbound_rx,
+            inbound_tx,
+            cancellation_token.clone(),
+            Some(fallback_coordinator.clone()),
+        );
+
+        let upstream_io = UpstreamIo::new(
+            inbound_rx,
+            outbound_tx,
+            channel_manager_sender,
+            channel_manager_receiver,
+        );
+        debug!(
+            "Successfully initialized upstream channel with {}",
+            resolved_addr
+        );
+
+        Ok(Self {
+            upstream_io,
+            required_extensions: required_extensions.clone(),
+            address: resolved_addr,
+        })
     }
 
     /// Starts the upstream connection and begins message processing.
