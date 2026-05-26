@@ -43,6 +43,12 @@
 //! `#[non_exhaustive]` so the iroh follow-up can add to them without breaking
 //! source-compatibility for existing matchers.
 //!
+//! A multi-transport listener helper (something like
+//! `MultiTransportListener` that fans `accept` from N inner listeners into
+//! one stream) is intentionally not introduced here: with only one transport
+//! in tree it would have nothing to multiplex. It lands alongside the second
+//! transport implementation that needs it.
+//!
 //! [1]: https://github.com/stratum-mining/stratum/discussions/1935
 
 use std::{net::SocketAddr, time::Duration};
