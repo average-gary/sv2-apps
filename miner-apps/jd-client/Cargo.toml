@@ -28,7 +28,7 @@ hex = "0.4.3"
 hotpath = "0.14.0"
 # iroh used directly by JDC's outbound connectors (Phase 4b). Pinned to the
 # same version stratum-apps depends on.
-iroh = { version = "1.0.0-rc.0", default-features = false, features = ["tls-ring"], optional = true }
+iroh = { version = "1.0.0-rc.1", default-features = false, features = ["tls-ring"], optional = true }
 
 [dev-dependencies]
 toml = "1.1.2"

@@ -59,8 +59,8 @@ dashmap = "6.1.0"
 async-trait   = { version = "0.1" }
 
 # Iroh transport optional dependencies
-iroh          = { version = "1.0.0-rc.0", default-features = false, features = ["tls-ring"], optional = true }
-iroh-base     = { version = "1.0.0-rc.0", default-features = false, optional = true }
+iroh          = { version = "1.0.0-rc.1", default-features = false, features = ["tls-ring"], optional = true }
+iroh-base     = { version = "1.0.0-rc.1", default-features = false, optional = true }
 arc-swap      = { version = "1.7",  optional = true }
 data-encoding = { version = "2.6",  optional = true }
 
