@@ -20,10 +20,11 @@
 //! keep_alive_interval_secs = 30
 //! per_request_timeout_secs = 30
 //!
+//! discovery_local_enable     = true   # mDNS LAN discovery (lowest latency)
 //! discovery_relay_enable     = true
 //! discovery_pkarr_pub_enable = true
 //! discovery_pkarr_res_enable = true
-//! discovery_dht_enable       = false
+//! discovery_dht_enable       = true   # BitTorrent mainline DHT
 //! discovery_n0_enable        = true
 //!
 //! [iroh.connection_overrides]
@@ -422,6 +423,7 @@ max_idle_timeout_secs = 120
 keep_alive_interval_secs = 45
 per_request_timeout_secs = 25
 
+discovery_local_enable = false
 discovery_relay_enable = true
 discovery_pkarr_pub_enable = false
 discovery_pkarr_res_enable = true
@@ -456,6 +458,7 @@ allowed_node_ids = ["{s_a}"]
         );
         assert_eq!(resolved.per_request_timeout, Duration::from_secs(25));
         // Discovery values flowed through.
+        assert!(!resolved.endpoint_config.discovery.local_enable);
         assert!(resolved.endpoint_config.discovery.relay_enable);
         assert!(!resolved.endpoint_config.discovery.pkarr_publisher_enable);
         assert!(resolved.endpoint_config.discovery.pkarr_resolver_enable);

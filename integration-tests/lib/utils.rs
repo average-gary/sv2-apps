@@ -698,6 +698,9 @@ mod iroh_fixtures {
             listen_address: std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
             secret_key_path: PathBuf::from(secret_key_path),
             discovery: DiscoveryConfigToml {
+                // mDNS off: tests run on loopback with discovery_overrides,
+                // and binding mDNS sockets in CI is flaky.
+                discovery_local_enable: Some(false),
                 discovery_relay_enable: Some(false),
                 discovery_pkarr_pub_enable: Some(false),
                 discovery_pkarr_res_enable: Some(false),

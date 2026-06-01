@@ -38,17 +38,24 @@ pub const ENV_PKARR_RESOLVER_ENABLE: &str = "SV2_IROH_PKARR_RESOLVER_ENABLE";
 pub const ENV_DHT_ENABLE: &str = "SV2_IROH_DHT_ENABLE";
 /// Environment variable that toggles n0's hosted discovery network.
 pub const ENV_N0_DISCOVERY_ENABLE: &str = "SV2_IROH_N0_DISCOVERY_ENABLE";
+/// Environment variable that toggles local mDNS-based discovery (LAN-only).
+pub const ENV_LOCAL_ENABLE: &str = "SV2_IROH_LOCAL_ENABLE";
 /// Environment variable that overrides connection addresses (`node_id=host:port`,
 /// comma-separated). Replaces the TOML map wholesale when set.
 pub const ENV_CONNECT_OVERRIDES: &str = "SV2_IROH_CONNECT_OVERRIDES";
 
 /// Resolved per-mechanism discovery configuration.
 ///
-/// All defaults match the plan's "Per-role `[iroh]` section (TOML)" defaults:
-/// relay / pkarr publisher / pkarr resolver / n0 discovery on, DHT off
-/// (matches Fedimint's production posture).
+/// All five mechanisms are independently switchable. Defaults: local mDNS
+/// on (works on LANs without any internet egress), relay / pkarr / DHT / n0
+/// on for global reach. Iroh queries every enabled mechanism concurrently
+/// and uses the first usable address — local mDNS naturally wins on LAN
+/// latency, so there is no explicit priority API to configure.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DiscoveryConfig {
+    /// Whether to use local mDNS-based discovery (LAN-only). Lowest-latency
+    /// path on a shared network and the only one that works air-gapped.
+    pub local_enable: bool,
     /// Whether to use relay-based discovery / fallback when direct dials fail.
     pub relay_enable: bool,
     /// Whether to publish this node's address records to pkarr.
@@ -56,6 +63,8 @@ pub struct DiscoveryConfig {
     /// Whether to resolve remote node addresses via pkarr.
     pub pkarr_resolver_enable: bool,
     /// Whether to participate in the BitTorrent mainline DHT for discovery.
+    /// Re-introduced after iroh 1.0-rc moved DHT into a separate crate
+    /// (`iroh-mainline-address-lookup`).
     pub dht_enable: bool,
     /// Whether to use n0's hosted discovery network.
     pub n0_discovery_enable: bool,
@@ -72,10 +81,11 @@ pub struct DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
+            local_enable: true,
             relay_enable: true,
             pkarr_publisher_enable: true,
             pkarr_resolver_enable: true,
-            dht_enable: false,
+            dht_enable: true,
             n0_discovery_enable: true,
             relay_url: None,
             connection_overrides: BTreeMap::new(),
@@ -88,6 +98,8 @@ impl Default for DiscoveryConfig {
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct DiscoveryConfigToml {
+    /// Override for `local_enable`.
+    pub discovery_local_enable: Option<bool>,
     /// Override for `relay_enable`.
     pub discovery_relay_enable: Option<bool>,
     /// Override for `pkarr_publisher_enable`.
@@ -182,6 +194,9 @@ impl DiscoveryConfig {
         let mut cfg = Self::default();
 
         // --- Step 2: apply TOML on top of defaults. ---
+        if let Some(v) = toml.discovery_local_enable {
+            cfg.local_enable = v;
+        }
         if let Some(v) = toml.discovery_relay_enable {
             cfg.relay_enable = v;
         }
@@ -205,6 +220,9 @@ impl DiscoveryConfig {
         }
 
         // --- Step 3: per-mechanism env var overrides. ---
+        if let Some(v) = read_env_bool(ENV_LOCAL_ENABLE)? {
+            cfg.local_enable = v;
+        }
         if let Some(v) = read_env_bool(ENV_RELAYS_ENABLE)? {
             cfg.relay_enable = v;
         }
@@ -381,6 +399,7 @@ mod tests {
     /// state regardless of how the surrounding shell set things up.
     fn clear_all_env() -> Vec<EnvGuard> {
         vec![
+            EnvGuard::unset(ENV_LOCAL_ENABLE),
             EnvGuard::unset(ENV_RELAYS_ENABLE),
             EnvGuard::unset(ENV_PKARR_PUBLISHER_ENABLE),
             EnvGuard::unset(ENV_PKARR_RESOLVER_ENABLE),
@@ -418,10 +437,11 @@ mod tests {
     #[test]
     fn defaults_match_plan() {
         let d = DiscoveryConfig::default();
+        assert!(d.local_enable);
         assert!(d.relay_enable);
         assert!(d.pkarr_publisher_enable);
         assert!(d.pkarr_resolver_enable);
-        assert!(!d.dht_enable);
+        assert!(d.dht_enable);
         assert!(d.n0_discovery_enable);
         assert!(d.relay_url.is_none());
         assert!(d.connection_overrides.is_empty());
@@ -437,20 +457,21 @@ mod tests {
         assert_eq!(resolved, DiscoveryConfig::default());
     }
 
-    // 3. TOML override of dht_enable=true.
+    // 3. TOML override of local_enable=false (off, vs default on).
     #[test]
     fn toml_overrides_default() {
         let _g = env_lock();
         let _restore = clear_all_env();
         let toml = DiscoveryConfigToml {
-            discovery_dht_enable: Some(true),
+            discovery_local_enable: Some(false),
             ..Default::default()
         };
         let resolved = DiscoveryConfig::resolve(toml).expect("resolve");
-        assert!(resolved.dht_enable);
+        assert!(!resolved.local_enable);
         // Other fields untouched.
         assert!(resolved.relay_enable);
         assert!(resolved.n0_discovery_enable);
+        assert!(resolved.dht_enable);
     }
 
     // 4. Env var overrides TOML.
@@ -458,13 +479,13 @@ mod tests {
     fn env_overrides_toml() {
         let _g = env_lock();
         let _restore = clear_all_env();
-        let _g_dht = EnvGuard::set(ENV_DHT_ENABLE, "true");
+        let _g_dht = EnvGuard::set(ENV_DHT_ENABLE, "false");
         let toml = DiscoveryConfigToml {
-            discovery_dht_enable: Some(false),
+            discovery_dht_enable: Some(true),
             ..Default::default()
         };
         let resolved = DiscoveryConfig::resolve(toml).expect("resolve");
-        assert!(resolved.dht_enable, "env true must beat toml false");
+        assert!(!resolved.dht_enable, "env false must beat toml true");
     }
 
     // 5. SV2_IROH_CONNECT_OVERRIDES env parses two entries.

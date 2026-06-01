@@ -61,6 +61,13 @@ async-trait   = { version = "0.1" }
 # Iroh transport optional dependencies
 iroh          = { version = "1.0.0-rc.1", default-features = false, features = ["tls-ring"], optional = true }
 iroh-base     = { version = "1.0.0-rc.1", default-features = false, optional = true }
+# Local mDNS-based address lookup (LAN/local-network discovery; lowest-latency
+# of the discovery paths and the only one that works air-gapped from the
+# public internet).
+iroh-mdns-address-lookup     = { version = "0.3", optional = true }
+# BitTorrent mainline DHT-based address lookup (re-introduced after iroh
+# 1.0-rc moved DHT discovery out of the iroh crate).
+iroh-mainline-address-lookup = { version = "0.3", optional = true }
 arc-swap      = { version = "1.7",  optional = true }
 data-encoding = { version = "2.6",  optional = true }
 
@@ -81,6 +88,8 @@ core = ["stratum-core"]
 iroh-transport = [
     "dep:iroh",
     "dep:iroh-base",
+    "dep:iroh-mdns-address-lookup",
+    "dep:iroh-mainline-address-lookup",
     "dep:arc-swap",
     "dep:data-encoding",
     "network",

@@ -29,6 +29,8 @@ use iroh::{
     endpoint::{presets, QuicTransportConfig},
     Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey,
 };
+use iroh_mainline_address_lookup::DhtAddressLookup;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use crate::network_helpers::iroh::discovery::DiscoveryConfig;
 use crate::network_helpers::iroh::identity;
@@ -211,6 +213,10 @@ pub async fn build_endpoint_with_key(
     // crypto provider). We start from `presets::Minimal`, which only sets
     // the crypto provider, and then add address lookup services explicitly
     // based on the per-mechanism toggles below.
+    // Capture the EndpointId before moving the secret into the builder —
+    // mDNS construction below needs it.
+    let endpoint_id = secret_key.public();
+
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret_key)
         .alpns(config.alpns.clone())
@@ -223,12 +229,31 @@ pub async fn build_endpoint_with_key(
 
     // ----- Per-mechanism address lookup toggles --------------------------------
     //
-    // Each mechanism is independently switchable per the plan. Order doesn't
-    // matter for correctness — iroh composes multiple address lookups
-    // internally — but we keep the order matching the plan/TOML ordering for
-    // readability.
+    // Each mechanism is independently switchable. Iroh queries every
+    // registered address lookup CONCURRENTLY and uses the first usable
+    // address — there is no explicit priority API. Local mDNS naturally wins
+    // on LAN latency, so registering it alongside the global mechanisms
+    // gives operators "local first" semantics for free without coupling us
+    // to an iroh internal we don't control.
+    //
+    // Registration order below is documentary (local → global) rather than
+    // load-bearing.
     let d = &config.discovery;
 
+    if d.local_enable {
+        // mDNS-based LAN discovery. Lowest-latency, only works on the same
+        // broadcast domain. Fails closed on platforms without mDNS support;
+        // construction is fallible because spawning the listener can fail.
+        match MdnsAddressLookup::builder().build(endpoint_id) {
+            Ok(local) => builder = builder.address_lookup(local),
+            Err(e) => {
+                tracing::warn!(
+                    "mDNS local discovery unavailable on this host ({e}); \
+                     falling through to global discovery only"
+                );
+            }
+        }
+    }
     if d.n0_discovery_enable {
         // n0 default: PkarrPublisher + DnsAddressLookup against the n0 DNS
         // server. Adds both publishing and DNS-based resolution. May overlap
@@ -249,16 +274,20 @@ pub async fn build_endpoint_with_key(
         builder = builder.address_lookup(DnsAddressLookup::n0_dns());
     }
     if d.dht_enable {
-        // DHT discovery moved out of the iroh main crate in 1.0-rc into
-        // `iroh-mainline-address-lookup`. We don't depend on that crate yet,
-        // so this toggle is documented as a no-op for now and emits a warn
-        // so operators see why their DHT setting is ignored. Tracked as a
-        // follow-up.
-        tracing::warn!(
-            "DHT discovery not yet supported on iroh 1.0-rc; ignoring \
-             `discovery_dht_enable=true`. To enable it, add the \
-             `iroh-mainline-address-lookup` crate as a dependency."
-        );
+        // BitTorrent mainline DHT. Re-introduced via the
+        // `iroh-mainline-address-lookup` crate after iroh 1.0-rc moved DHT
+        // discovery out of the main iroh crate. The `build()` call must run
+        // from a tokio runtime context, which the surrounding `async fn`
+        // already guarantees.
+        match DhtAddressLookup::builder().build() {
+            Ok(dht) => builder = builder.address_lookup(dht),
+            Err(e) => {
+                tracing::warn!(
+                    "DHT (mainline) discovery failed to start ({e}); \
+                     continuing without it"
+                );
+            }
+        }
     }
 
     // ----- Bind on the configured UDP socket -----------------------------------
@@ -299,6 +328,7 @@ mod tests {
             secret_key_path,
             alpns: vec![b"sv2/pool/0".to_vec()],
             discovery: DiscoveryConfig {
+                local_enable: false,
                 relay_enable: false,
                 pkarr_publisher_enable: false,
                 pkarr_resolver_enable: false,
