@@ -413,8 +413,9 @@ impl Sv2Tp {
 }
 
 /// Build the [`Sv2Target`] for the JDC→TP dial. With `iroh-transport`
-/// disabled, always a `Sv2Target::Tcp`. With it enabled and TP iroh fields
-/// set, returns the right combined variant per `prefer_transport`.
+/// disabled, always a `Sv2Target::Tcp`. With it enabled, returns
+/// `Sv2Target::Iroh` when `prefer_transport = "iroh"` (and a NodeId is set);
+/// otherwise `Sv2Target::Tcp`.
 #[cfg(feature = "iroh-transport")]
 fn build_tp_target(
     addr: std::net::SocketAddr,

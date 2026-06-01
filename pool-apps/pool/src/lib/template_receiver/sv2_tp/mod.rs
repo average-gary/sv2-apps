@@ -94,12 +94,10 @@ impl Sv2Tp {
     ///   and (when the `iroh-transport` feature is on AND the per-peer iroh
     ///   extension config supplies a NodeId) an iroh+Noise connector sharing
     ///   the pool's iroh [`Endpoint`].
-    /// - Resolves the per-peer [`Sv2Target`] from the configured
-    ///   `prefer_transport` order: TCP-only when no iroh fields are
-    ///   configured; combined `IrohThenTcp` / `TcpThenIroh` variants when
-    ///   the operator opts in. The `CompositeSv2Connector` applies the
-    ///   fallback ordering encoded by the variant per the plan's
-    ///   §"Client side — fallback ordering" table.
+    /// - Resolves the per-peer [`Sv2Target`] from `prefer_transport`: TCP
+    ///   when unset (or `tcp`); iroh when `iroh` (requires a NodeId). An
+    ///   upstream is one transport — operators who want both for the same
+    ///   physical TP wire it twice.
     /// - Spawns transport-agnostic bridge tasks via
     ///   [`spawn_conn_pair_bridge_tasks`].
     ///
@@ -496,31 +494,14 @@ async fn build_target(
                 (PreferTransport::Iroh, None) => {
                     warn!(
                         "Sv2Tp: prefer_transport=iroh but no iroh_node_id configured; \
-                         falling back to TCP-only target"
+                         dialing the configured TCP address — fix the [iroh_tp] block to \
+                         actually dial via iroh"
                     );
                     Sv2Target::Tcp {
                         addr: tcp_addr,
                         authority_pubkey,
                     }
                 }
-                (PreferTransport::IrohThenTcp, Some(node_addr)) => Sv2Target::IrohThenTcp {
-                    node_addr,
-                    tcp_addr,
-                    authority_pubkey,
-                },
-                (PreferTransport::IrohThenTcp, None) => Sv2Target::Tcp {
-                    addr: tcp_addr,
-                    authority_pubkey,
-                },
-                (PreferTransport::TcpThenIroh, Some(node_addr)) => Sv2Target::TcpThenIroh {
-                    tcp_addr,
-                    node_addr,
-                    authority_pubkey,
-                },
-                (PreferTransport::TcpThenIroh, None) => Sv2Target::Tcp {
-                    addr: tcp_addr,
-                    authority_pubkey,
-                },
             };
             return Ok(target);
         }

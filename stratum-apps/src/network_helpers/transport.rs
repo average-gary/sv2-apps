@@ -27,7 +27,7 @@ use stratum_core::{
 use std::time::Duration;
 use tokio::net::TcpStream;
 #[cfg(feature = "iroh-transport")]
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     key_utils::{Secp256k1PublicKey, Secp256k1SecretKey},
@@ -105,11 +105,10 @@ impl PeerIdentity {
 
 /// Description of a target to dial. Used by [`Sv2Connector::connect`].
 ///
-/// The `*ThenTcp` / `Tcp*` combined variants encode per-peer fallback
-/// preferences. A pure-TCP connector ([`TcpSv2Connector`]) honors the TCP leg
-/// of any combined variant and rejects pure-iroh targets; a pure-iroh
-/// connector does the symmetric thing. A dual connector (Wave 3b) honors all
-/// variants and applies the configured ordering.
+/// An upstream is one transport, period. A target either dials TCP or iroh —
+/// no per-peer fallback ordering. Operators who want both can configure two
+/// upstream entries (one per transport) and let the role's own retry/failover
+/// logic pick.
 #[derive(Clone, Debug)]
 pub enum Sv2Target {
     /// TCP-only target.
@@ -126,20 +125,6 @@ pub enum Sv2Target {
         /// iroh dial address (NodeId + optional direct/relay hints).
         node_addr: iroh::EndpointAddr,
         /// Optional SV2 authority pubkey to verify after Noise handshake.
-        authority_pubkey: Option<Secp256k1PublicKey>,
-    },
-    /// Try iroh first; on failure, fall back to TCP.
-    #[cfg(feature = "iroh-transport")]
-    IrohThenTcp {
-        node_addr: iroh::EndpointAddr,
-        tcp_addr: SocketAddr,
-        authority_pubkey: Option<Secp256k1PublicKey>,
-    },
-    /// Try TCP first; on failure, fall back to iroh.
-    #[cfg(feature = "iroh-transport")]
-    TcpThenIroh {
-        tcp_addr: SocketAddr,
-        node_addr: iroh::EndpointAddr,
         authority_pubkey: Option<Secp256k1PublicKey>,
     },
 }
@@ -236,42 +221,6 @@ where
                 authority_pubkey,
             } => self.dial_tcp(*addr, *authority_pubkey).await,
 
-            // A pure-TCP connector cannot speak iroh, but the combined
-            // variants carry a usable TCP leg — honor it.
-            #[cfg(feature = "iroh-transport")]
-            Sv2Target::IrohThenTcp {
-                tcp_addr,
-                authority_pubkey,
-                ..
-            } => {
-                warn!(
-                    "TcpSv2Connector: target is IrohThenTcp; iroh is unavailable in this \
-                     connector, dialing the TCP fallback ({tcp_addr}) directly"
-                );
-                self.dial_tcp(*tcp_addr, *authority_pubkey).await
-            }
-
-            #[cfg(feature = "iroh-transport")]
-            Sv2Target::TcpThenIroh {
-                tcp_addr,
-                authority_pubkey,
-                ..
-            } => {
-                // Try TCP. If it fails, log a hint that an iroh-capable
-                // connector would have fallen back here, then return the TCP
-                // error to the caller.
-                match self.dial_tcp(*tcp_addr, *authority_pubkey).await {
-                    Ok(pair) => Ok(pair),
-                    Err(e) => {
-                        warn!(
-                            "TcpSv2Connector: TCP leg of TcpThenIroh failed ({e}); iroh \
-                             fallback unavailable in this connector"
-                        );
-                        Err(e)
-                    }
-                }
-            }
-
             #[cfg(feature = "iroh-transport")]
             Sv2Target::Iroh { .. } => Err(Error::WrongTargetForTransport(
                 "TcpSv2Connector cannot dial Sv2Target::Iroh; use an iroh-capable connector"
@@ -351,28 +300,26 @@ where
 //  build_target + CompositeSv2Connector (Phase 4)
 // =====================================================================
 
-/// Per-peer fallback preference. Drives [`build_target`] in selecting which
-/// [`Sv2Target`] variant to construct for the configured peer, and matches
-/// the `prefer_transport` TOML field per the plan's
-/// §"Client side — fallback ordering" table.
+/// Per-peer transport selection.
 ///
-/// Defined here so all four SV2 roles share the same vocabulary. Additive:
-/// existing items in this module are unchanged.
+/// An upstream is one transport — no fallback ordering. The default is `Tcp`
+/// so configs without an `[iroh]` block behave exactly as they did before
+/// the iroh transport landed. Operators who want a peer reached over iroh
+/// set `prefer_transport = "iroh"` and supply `iroh_node_id`. If both
+/// transports are desired against the same physical peer, configure two
+/// `[[upstreams]]` entries.
+///
+/// Defined here so all four SV2 roles share the same vocabulary.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 #[cfg_attr(feature = "iroh-transport", derive(serde::Deserialize))]
 #[cfg_attr(feature = "iroh-transport", serde(rename_all = "snake_case"))]
 pub enum PreferTransport {
-    /// TCP only, no fallback.
-    Tcp,
-    /// Iroh only, no fallback. Has no effect when `iroh-transport` is off
-    /// (the call site falls back to TCP at config-resolution time).
-    Iroh,
-    /// Try iroh; if it fails, try TCP. The default.
+    /// TCP only. The default.
     #[default]
-    IrohThenTcp,
-    /// Try TCP; if it fails, try iroh. Useful in known UDP-throttled
-    /// networks.
-    TcpThenIroh,
+    Tcp,
+    /// Iroh only. Has no effect when `iroh-transport` is off (the call site
+    /// errors at config-resolution time).
+    Iroh,
 }
 
 /// Build a [`Sv2Target`] from the per-peer config fields.
@@ -399,66 +346,38 @@ pub async fn build_target(
 
     #[cfg(feature = "iroh-transport")]
     {
-        // Resolve the iroh leg only if the caller supplied a node_id.
-        let iroh_leg: Option<iroh::EndpointAddr> = match iroh_node_id {
-            Some(s) => match s.parse::<iroh::EndpointId>() {
-                Ok(node_id) => {
-                    let relay = iroh_relay_url
-                        .filter(|s| !s.is_empty())
-                        .and_then(|url| iroh::RelayUrl::from_str(url).ok());
-                    let mut addr = iroh::EndpointAddr::new(node_id);
-                    if let Some(relay) = relay {
-                        addr = addr.with_relay_url(relay);
-                    }
-                    Some(addr)
-                }
-                Err(e) => {
-                    warn!(
-                        "build_target: invalid iroh_node_id `{s}` ({e}); falling back to TCP-only"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-
-        let target = match (prefer, iroh_leg) {
-            (PreferTransport::Tcp, _) => Sv2Target::Tcp {
+        let target = match prefer {
+            PreferTransport::Tcp => Sv2Target::Tcp {
                 addr: tcp_addr,
                 authority_pubkey,
             },
-            (PreferTransport::Iroh, Some(node_addr)) => Sv2Target::Iroh {
-                node_addr,
-                authority_pubkey,
-            },
-            (PreferTransport::Iroh, None) => {
-                warn!(
-                    "build_target: prefer_transport=iroh but no iroh_node_id configured; \
-                     falling back to TCP-only target"
-                );
-                Sv2Target::Tcp {
-                    addr: tcp_addr,
+            PreferTransport::Iroh => {
+                let raw = iroh_node_id.ok_or_else(|| {
+                    Error::WrongTargetForTransport(
+                        "build_target: prefer_transport=iroh requires iroh_node_id".to_string(),
+                    )
+                })?;
+                let node_id = raw.parse::<iroh::EndpointId>().map_err(|e| {
+                    Error::WrongTargetForTransport(format!(
+                        "build_target: invalid iroh_node_id `{raw}`: {e}"
+                    ))
+                })?;
+                let mut node_addr = iroh::EndpointAddr::new(node_id);
+                if let Some(url) = iroh_relay_url.filter(|s| !s.is_empty()) {
+                    match iroh::RelayUrl::from_str(url) {
+                        Ok(parsed) => node_addr = node_addr.with_relay_url(parsed),
+                        Err(e) => {
+                            warn!(
+                                "build_target: invalid iroh_relay_url `{url}` ({e}); ignoring it"
+                            );
+                        }
+                    }
+                }
+                Sv2Target::Iroh {
+                    node_addr,
                     authority_pubkey,
                 }
             }
-            (PreferTransport::IrohThenTcp, Some(node_addr)) => Sv2Target::IrohThenTcp {
-                node_addr,
-                tcp_addr,
-                authority_pubkey,
-            },
-            (PreferTransport::IrohThenTcp, None) => Sv2Target::Tcp {
-                addr: tcp_addr,
-                authority_pubkey,
-            },
-            (PreferTransport::TcpThenIroh, Some(node_addr)) => Sv2Target::TcpThenIroh {
-                tcp_addr,
-                node_addr,
-                authority_pubkey,
-            },
-            (PreferTransport::TcpThenIroh, None) => Sv2Target::Tcp {
-                addr: tcp_addr,
-                authority_pubkey,
-            },
         };
         debug!(?target, "build_target resolved");
         Ok(target)
@@ -481,9 +400,9 @@ use std::str::FromStr;
 //  Composite connector (Phase 4)
 // =====================================================================
 
-/// Composite outbound dialer that owns a TCP connector and (optionally)
-/// an iroh connector, and applies the [`PreferTransport`] ordering encoded
-/// by the [`Sv2Target`] variant it is asked to dial.
+/// Composite outbound dialer that dispatches a [`Sv2Target`] to either a TCP
+/// or iroh connector — no fallback. The variant of [`Sv2Target`] picks the
+/// transport.
 ///
 /// Usage:
 ///   * Build once per role at startup.
@@ -492,15 +411,10 @@ use std::str::FromStr;
 ///
 /// Behaviour by [`Sv2Target`] variant:
 ///
-/// | Variant       | Behaviour                                                   |
-/// |---------------|-------------------------------------------------------------|
-/// | `Tcp`         | TCP only. Iroh is not attempted.                            |
-/// | `Iroh`        | Iroh only. TCP is not attempted. Errors if no iroh wired.  |
-/// | `IrohThenTcp` | Iroh first; on failure, TCP. (Logs reason of iroh failure.) |
-/// | `TcpThenIroh` | TCP first; on failure, iroh.                                |
-///
-/// Each fallback hop logs the failure reason so operators can see why the
-/// preferred transport was abandoned.
+/// | Variant | Behaviour                                                       |
+/// |---------|-----------------------------------------------------------------|
+/// | `Tcp`   | TCP only.                                                       |
+/// | `Iroh`  | Iroh only. Errors with `WrongTargetForTransport` if no iroh wired. |
 pub struct CompositeSv2Connector {
     tcp: TcpSv2Connector,
     #[cfg(feature = "iroh-transport")]
@@ -536,11 +450,8 @@ where
 {
     async fn connect(&self, target: &Sv2Target) -> Result<ConnPair<M>, Error> {
         match target {
-            // Pure TCP — always honored.
             Sv2Target::Tcp { .. } => self.tcp.connect(target).await,
 
-            // Pure iroh — only honored if an iroh connector was supplied at
-            // construction time. Otherwise surface a clean error.
             #[cfg(feature = "iroh-transport")]
             Sv2Target::Iroh { .. } => match &self.iroh {
                 Some(iroh) => iroh.connect(target).await,
@@ -550,94 +461,6 @@ where
                         .to_string(),
                 )),
             },
-
-            // Iroh-then-TCP fallback ordering.
-            #[cfg(feature = "iroh-transport")]
-            Sv2Target::IrohThenTcp {
-                node_addr,
-                tcp_addr,
-                authority_pubkey,
-            } => match &self.iroh {
-                Some(iroh) => {
-                    info!(
-                        node_id = %node_addr.id,
-                        "CompositeSv2Connector: trying iroh leg"
-                    );
-                    let iroh_target = Sv2Target::Iroh {
-                        node_addr: node_addr.clone(),
-                        authority_pubkey: *authority_pubkey,
-                    };
-                    match iroh.connect(&iroh_target).await {
-                        Ok(pair) => Ok(pair),
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                tcp_addr = %tcp_addr,
-                                "CompositeSv2Connector: iroh leg failed, falling back to TCP"
-                            );
-                            let tcp_target = Sv2Target::Tcp {
-                                addr: *tcp_addr,
-                                authority_pubkey: *authority_pubkey,
-                            };
-                            self.tcp.connect(&tcp_target).await
-                        }
-                    }
-                }
-                None => {
-                    warn!(
-                        tcp_addr = %tcp_addr,
-                        "CompositeSv2Connector: no iroh connector wired; using TCP leg of \
-                         IrohThenTcp directly"
-                    );
-                    let tcp_target = Sv2Target::Tcp {
-                        addr: *tcp_addr,
-                        authority_pubkey: *authority_pubkey,
-                    };
-                    self.tcp.connect(&tcp_target).await
-                }
-            },
-
-            // TCP-then-iroh fallback ordering.
-            #[cfg(feature = "iroh-transport")]
-            Sv2Target::TcpThenIroh {
-                tcp_addr,
-                node_addr,
-                authority_pubkey,
-            } => {
-                info!(
-                    tcp_addr = %tcp_addr,
-                    "CompositeSv2Connector: trying TCP leg"
-                );
-                let tcp_target = Sv2Target::Tcp {
-                    addr: *tcp_addr,
-                    authority_pubkey: *authority_pubkey,
-                };
-                match self.tcp.connect(&tcp_target).await {
-                    Ok(pair) => Ok(pair),
-                    Err(e) => match &self.iroh {
-                        Some(iroh) => {
-                            warn!(
-                                error = %e,
-                                node_id = %node_addr.id,
-                                "CompositeSv2Connector: TCP leg failed, falling back to iroh"
-                            );
-                            let iroh_target = Sv2Target::Iroh {
-                                node_addr: node_addr.clone(),
-                                authority_pubkey: *authority_pubkey,
-                            };
-                            iroh.connect(&iroh_target).await
-                        }
-                        None => {
-                            warn!(
-                                error = %e,
-                                "CompositeSv2Connector: TCP leg failed and no iroh connector \
-                                 wired; surfacing TCP error"
-                            );
-                            Err(e)
-                        }
-                    },
-                }
-            }
         }
     }
 }
@@ -797,61 +620,4 @@ mod tests {
         }
     }
 
-    /// `TcpSv2Connector` falls through to the TCP leg of an `IrohThenTcp`
-    /// target — useful when ops disable iroh entirely at the connector level.
-    #[cfg(feature = "iroh-transport")]
-    #[tokio::test]
-    async fn tcp_connector_handles_iroh_then_tcp_via_fallback() {
-        use ::iroh::{EndpointAddr, SecretKey};
-
-        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-
-        let (auth_pub, auth_priv) = test_keypair();
-
-        let listener = TcpSv2Listener::bind(
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            auth_pub,
-            auth_priv,
-            10_000,
-        )
-        .await
-        .expect("bind TCP listener");
-        let bound = listener.local_addr().expect("local_addr");
-
-        let server_task = tokio::spawn(async move {
-            let (_peer, (rx, tx)) =
-                <TcpSv2Listener as Sv2Listener<AnyMessage<'static>>>::accept(&listener)
-                    .await
-                    .expect("accept");
-            let frame = rx.recv().await.expect("recv frame");
-            tx.send(frame).await.expect("echo");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        });
-
-        // Build an unreachable iroh node addr; the TCP-only connector ignores
-        // it and dials `tcp_addr` directly (logging a warning).
-        let secret = SecretKey::generate();
-        let node_id = secret.public();
-        let node_addr = EndpointAddr::new(node_id);
-
-        let connector = TcpSv2Connector::new();
-        let target = Sv2Target::IrohThenTcp {
-            node_addr,
-            tcp_addr: bound,
-            authority_pubkey: Some(auth_pub),
-        };
-
-        let (rx, tx) = <TcpSv2Connector as Sv2Connector<AnyMessage<'static>>>::connect(
-            &connector, &target,
-        )
-        .await
-        .expect("connect (TCP fallback)");
-
-        let (frame, expected) = build_setup_connection_frame();
-        tx.send(frame).await.expect("send");
-        let mut got = rx.recv().await.expect("recv");
-        assert_eq!(extract_payload(&mut got), expected);
-
-        server_task.await.expect("server task");
-    }
 }

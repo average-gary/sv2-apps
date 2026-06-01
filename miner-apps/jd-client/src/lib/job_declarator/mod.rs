@@ -123,10 +123,9 @@ impl JobDeclarator {
     /// Creates a new JobDeclarator instance by dialing and performing a Noise handshake.
     ///
     /// - Resolves hostname to IP address via DNS (if not already an IP).
-    /// - Dials JDS via the transport-agnostic [`JdcConnectors`]; with the
-    ///   `iroh-transport` feature on and per-upstream iroh fields set, the
-    ///   dial can prefer iroh and fall back to TCP per `prefer_transport`.
-    ///   Plan §"Phase 4 — Client-side fallback + remaining roles" / PR 4b.
+    /// - Dials JDS via the transport-agnostic [`JdcConnectors`]; the
+    ///   per-upstream `prefer_transport` (TCP or iroh — no fallback) picks
+    ///   the connector. An upstream is one transport.
     /// - Spawns bridge IO tasks to wire the resulting [`ConnPair`] into the
     ///   existing `Sv2Frame` channels consumed by the rest of the JDC
     ///   pipeline.
@@ -392,9 +391,9 @@ impl JobDeclarator {
 }
 
 /// Build the [`Sv2Target`] for the JDC→JDS dial. With `iroh-transport`
-/// disabled, always a `Sv2Target::Tcp`. With it enabled, returns the right
-/// combined variant per the upstream entry's `prefer_transport` and iroh
-/// fields.
+/// disabled, always a `Sv2Target::Tcp`. With it enabled, returns
+/// `Sv2Target::Iroh` when the upstream's `prefer_transport = "iroh"` (and a
+/// NodeId is set); otherwise `Sv2Target::Tcp`.
 #[cfg(feature = "iroh-transport")]
 fn build_jds_target(addr: SocketAddr, upstream_entry: &UpstreamEntry) -> Sv2Target {
     crate::transport::build_jds_target(

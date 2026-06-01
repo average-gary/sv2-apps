@@ -137,10 +137,8 @@ impl Upstream {
     ///
     /// - Resolves hostname to IP address via DNS (if not already an IP)
     /// - Dials the upstream via the transport-agnostic [`JdcConnectors`].
-    ///   When iroh is configured for this upstream and the
-    ///   `iroh-transport` feature is enabled, this can prefer iroh and fall
-    ///   back to TCP per the per-upstream `prefer_transport`. Plan §"Phase
-    ///   4 — Client-side fallback + remaining roles" / PR 4b.
+    ///   The per-upstream `prefer_transport` (TCP or iroh — no fallback)
+    ///   picks the connector. An upstream is one transport.
     /// - Spawns bridge IO tasks to wire the resulting [`ConnPair`] into the
     ///   existing `Sv2Frame` channels consumed by the rest of the JDC
     ///   pipeline.
@@ -468,9 +466,9 @@ impl Upstream {
 }
 
 /// Build the [`Sv2Target`] for the JDC→Pool dial. With `iroh-transport`
-/// disabled, always a `Sv2Target::Tcp`. With it enabled and the upstream
-/// configured for iroh, returns the appropriate combined variant per
-/// `prefer_transport`.
+/// disabled, always a `Sv2Target::Tcp`. With it enabled, returns
+/// `Sv2Target::Iroh` when the upstream's `prefer_transport = "iroh"` (and a
+/// NodeId is set); otherwise `Sv2Target::Tcp`.
 #[cfg(feature = "iroh-transport")]
 fn build_pool_target(addr: SocketAddr, upstream_entry: &UpstreamEntry) -> Sv2Target {
     crate::transport::build_pool_target(

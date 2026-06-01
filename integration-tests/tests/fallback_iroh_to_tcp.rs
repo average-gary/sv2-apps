@@ -1,17 +1,19 @@
-//! Fallback + adversarial regression tests for the iroh transport.
+//! Adversarial regression tests for the iroh transport.
 //!
-//! These tests validate the wiki's defense-in-depth claims:
+//! These tests validate:
 //!
-//! 1. **TCP fallback is non-optional** (plan §H): when iroh is unreachable,
-//!    `CompositeSv2Connector` must successfully fall through to TCP.
-//! 2. **prefer-tcp respects intent**: a `Sv2Target::Tcp` is honored as
+//! 1. **prefer-tcp respects intent**: a `Sv2Target::Tcp` is honored as
 //!    TCP-only even when the connector has an iroh leg wired.
-//! 3. **Runtime whitelist update**: switching admission policy at runtime
+//! 2. **Runtime whitelist update**: switching admission policy at runtime
 //!    affects future dials but does not evict in-flight connections.
-//! 4. **Whitelist rejects unknown NodeIds at QUIC** before any SV2 bytes
+//! 3. **Whitelist rejects unknown NodeIds at QUIC** before any SV2 bytes
 //!    flow.
-//! 5. **ALPN pinning at QUIC**: a dialer that requests the wrong ALPN is
+//! 4. **ALPN pinning at QUIC**: a dialer that requests the wrong ALPN is
 //!    rejected at the QUIC transport layer (no Noise handshake bytes flow).
+//!
+//! An upstream is one transport — there is no implicit TCP fallback when an
+//! iroh dial fails. Operators who want both for the same physical peer
+//! configure two `[[upstreams]]` entries.
 //!
 //! The tests build their own minimal listener/connector fixtures rather
 //! than spinning up the full pool binary. This keeps each test under ~10s
@@ -170,93 +172,7 @@ async fn round_trip_setup_connection(
 }
 
 // ===================================================================== //
-// Test 1: prefer iroh, then TCP — falls back when iroh unreachable.     //
-// ===================================================================== //
-//
-// Loadbearing fallback test. Pool stands up TCP+iroh listeners, but the
-// client's IrohThenTcp target points at an unreachable iroh address. The
-// `CompositeSv2Connector` must surface the iroh failure quickly and dial the
-// TCP listener instead.
-#[tokio::test(flavor = "multi_thread")]
-async fn prefer_iroh_then_tcp_falls_back_when_iroh_unreachable() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-
-    let (auth_pub, auth_priv) = test_keypair();
-
-    // 1. Real TCP listener — the fallback target.
-    let tcp_listener = TcpSv2Listener::bind(
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        auth_pub,
-        auth_priv,
-        10_000,
-    )
-    .await
-    .expect("bind TCP listener");
-    let tcp_addr = tcp_listener.local_addr().expect("local_addr");
-
-    // TCP echo task: wait for one accept, echo one frame, hold briefly.
-    let tcp_task = tokio::spawn(async move {
-        let (peer, (rx, tx)) =
-            <TcpSv2Listener as Sv2Listener<AnyMessage<'static>>>::accept(&tcp_listener)
-                .await
-                .expect("TCP accept");
-        // TCP listener does not learn the peer's authority pubkey on Noise NX.
-        assert!(peer.authority_pubkey.is_none());
-        let frame = rx.recv().await.expect("TCP recv");
-        tx.send(frame).await.expect("TCP echo");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    });
-
-    // 2. Construct an UNREACHABLE iroh node addr. We bind a client endpoint
-    //    only to harvest a NodeId; the direct address points at a port that
-    //    has no iroh listener running. iroh on 0.91 surfaces this as a dial
-    //    error rather than hanging forever (relay disabled, no discovery).
-    let stranger_node_id = SecretKey::generate().public();
-    let unreachable_socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
-    let unreachable_iroh = EndpointAddr::new(stranger_node_id).with_ip_addr(unreachable_socket);
-
-    // 3. Composite client: TCP+iroh. The iroh leg's per-request timeout is
-    //    short so the dial doesn't hang on the unreachable target.
-    let client_iroh_ep = build_client_endpoint().await;
-    let iroh_connector = IrohSv2Connector::new(
-        client_iroh_ep,
-        BTreeMap::new(),
-        SV2_POOL_ALPN,
-        Duration::from_secs(2),
-    );
-    let composite = CompositeSv2Connector::new(iroh_connector);
-
-    let target = Sv2Target::IrohThenTcp {
-        node_addr: unreachable_iroh,
-        tcp_addr,
-        authority_pubkey: Some(auth_pub),
-    };
-
-    // 4. The connect MUST succeed via the TCP fallback after the iroh leg
-    //    surfaces a dial error.
-    let started = Instant::now();
-    let (rx, tx) = <CompositeSv2Connector as Sv2Connector<AnyMessage<'static>>>::connect(
-        &composite, &target,
-    )
-    .await
-    .expect("composite connect should succeed via TCP fallback");
-    let elapsed = started.elapsed();
-
-    // The composite waits up to per_request_timeout (2s) on iroh before
-    // falling back, so allow generous slack but still bound it.
-    assert!(
-        elapsed < Duration::from_secs(8),
-        "fallback should be fast, took {elapsed:?}"
-    );
-
-    // 5. Round-trip a SetupConnection frame end-to-end through TCP+Noise.
-    round_trip_setup_connection(rx, tx).await.expect("TCP fallback round-trip");
-
-    tcp_task.await.expect("TCP server task");
-}
-
-// ===================================================================== //
-// Test 2: prefer TCP — never attempts iroh.                              //
+// Test 1: prefer TCP — never attempts iroh.                              //
 // ===================================================================== //
 //
 // Sanity check: a `Sv2Target::Tcp` handed to a composite connector that has

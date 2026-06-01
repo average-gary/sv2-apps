@@ -1,23 +1,17 @@
 //! `IrohSv2Connector`: outbound iroh dial implementing
 //! [`crate::network_helpers::transport::Sv2Connector`].
 //!
-//! This connector knows only the iroh path. The plan's
-//! §"Client side — fallback ordering" v1 commitment is that fallback is
-//! composed at the call site, not inside one connector — i.e. when the
-//! caller hands an [`Sv2Target::IrohThenTcp`] / [`Sv2Target::TcpThenIroh`]
-//! variant to this connector, we honor the iroh leg only and surface a
-//! clean error so the caller can dial TCP next via a separate
-//! [`TcpSv2Connector`](crate::network_helpers::transport::TcpSv2Connector).
+//! This connector knows only the iroh path. An upstream is one transport —
+//! TCP fallback is not composed in this layer. A caller that wants TCP for a
+//! given peer hands the dial to [`TcpSv2Connector`](crate::network_helpers::transport::TcpSv2Connector)
+//! instead.
 //!
 //! ## Behaviour by [`Sv2Target`] variant
 //!
-//! | Variant            | Behaviour                                         |
-//! |--------------------|---------------------------------------------------|
-//! | `Iroh`             | Dial; honor `connection_overrides` if matched.    |
-//! | `IrohThenTcp`      | Dial; if the iroh leg fails, return an error.    |
-//! | `TcpThenIroh`      | Dial; the caller is expected to have already     |
-//! |                    | tried TCP and is now reaching for iroh.          |
-//! | `Tcp { .. }`       | Return [`Error::WrongTargetForTransport`].       |
+//! | Variant       | Behaviour                                              |
+//! |---------------|--------------------------------------------------------|
+//! | `Iroh`        | Dial; honor `connection_overrides` if matched.         |
+//! | `Tcp { .. }`  | Return [`Error::WrongTargetForTransport`].             |
 //!
 //! ## Per-request timeout
 //!
@@ -221,27 +215,6 @@ where
                 node_addr,
                 authority_pubkey,
             } => self.dial_iroh(node_addr, *authority_pubkey).await,
-
-            Sv2Target::IrohThenTcp {
-                node_addr,
-                authority_pubkey,
-                ..
-            } => {
-                // Plan §"Client side — fallback ordering" v1: this connector
-                // does not own a TCP fallback; the caller composes one if
-                // they want it. We honor the iroh leg here.
-                self.dial_iroh(node_addr, *authority_pubkey).await
-            }
-
-            Sv2Target::TcpThenIroh {
-                node_addr,
-                authority_pubkey,
-                ..
-            } => {
-                // The caller has already exhausted the TCP leg and is now
-                // reaching for the iroh leg.
-                self.dial_iroh(node_addr, *authority_pubkey).await
-            }
 
             Sv2Target::Tcp { .. } => Err(Error::WrongTargetForTransport(
                 "IrohSv2Connector cannot dial Sv2Target::Tcp; use TcpSv2Connector"

@@ -66,11 +66,12 @@ user_identity = "your_primary_username_here"
 #                   it via discovery, or it must be supplied via
 #                   `[iroh.connection_overrides]` below).
 # iroh_relay_url  — optional relay URL hint for this peer; empty string ⇒ none.
-# prefer_transport — one of: "tcp", "iroh", "iroh_then_tcp" (default),
-#                   "tcp_then_iroh".
+# prefer_transport — "tcp" (default) or "iroh". An upstream is one transport
+#                    — configure two `[[upstreams]]` entries to reach the
+#                    same physical pool over both.
 # iroh_node_id    = "k51qzi5uqu5dl..."
 # iroh_relay_url  = ""
-# prefer_transport = "iroh_then_tcp"
+# prefer_transport = "iroh"
 
 # Braiins Pool Backup Pool
 [[upstreams]]

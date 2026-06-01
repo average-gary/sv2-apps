@@ -12,11 +12,9 @@
 //! that JDC's downstream listener was built with in Phase 3c, so the JDC has
 //! exactly one UDP socket regardless of how many roles it speaks to.
 //!
-//! Per-dial-site fallback is composed locally here (`dial_with_fallback`)
-//! rather than inside `IrohSv2Connector` — the connector honors the iroh leg
-//! of any `Sv2Target` variant and surfaces a clean error so the caller can try
-//! TCP next. This keeps the change surface in `stratum-apps/` to a single ALPN
-//! constant.
+//! An upstream is one transport — TCP or iroh. The `Sv2Target` variant picks
+//! the connector; there is no per-dial-site fallback. Operators who want both
+//! against the same physical peer configure two `[[upstreams]]` entries.
 
 use std::sync::Arc;
 
@@ -38,7 +36,7 @@ use std::net::SocketAddr;
 #[cfg(feature = "iroh-transport")]
 use stratum_apps::key_utils::Secp256k1PublicKey;
 #[cfg(feature = "iroh-transport")]
-use tracing::{debug, info};
+use tracing::info;
 
 #[cfg(feature = "iroh-transport")]
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl};
@@ -175,7 +173,7 @@ impl JdcConnectors {
         }
     }
 
-    /// Dial JDC→Pool with the configured fallback ordering.
+    /// Dial JDC→Pool. The `Sv2Target` variant picks the transport.
     pub async fn connect_pool<M>(
         &self,
         target: &Sv2Target,
@@ -185,7 +183,7 @@ impl JdcConnectors {
     {
         #[cfg(feature = "iroh-transport")]
         {
-            return dial_with_fallback(&self.tcp, self.pool_iroh.as_deref(), target).await;
+            return dial_one(&self.tcp, self.pool_iroh.as_deref(), target).await;
         }
         #[cfg(not(feature = "iroh-transport"))]
         {
@@ -193,7 +191,7 @@ impl JdcConnectors {
         }
     }
 
-    /// Dial JDC→JDS with the configured fallback ordering.
+    /// Dial JDC→JDS. The `Sv2Target` variant picks the transport.
     pub async fn connect_jds<M>(
         &self,
         target: &Sv2Target,
@@ -203,7 +201,7 @@ impl JdcConnectors {
     {
         #[cfg(feature = "iroh-transport")]
         {
-            return dial_with_fallback(&self.tcp, self.jds_iroh.as_deref(), target).await;
+            return dial_one(&self.tcp, self.jds_iroh.as_deref(), target).await;
         }
         #[cfg(not(feature = "iroh-transport"))]
         {
@@ -211,7 +209,7 @@ impl JdcConnectors {
         }
     }
 
-    /// Dial JDC→TP with the configured fallback ordering.
+    /// Dial JDC→TP. The `Sv2Target` variant picks the transport.
     pub async fn connect_tp<M>(
         &self,
         target: &Sv2Target,
@@ -221,7 +219,7 @@ impl JdcConnectors {
     {
         #[cfg(feature = "iroh-transport")]
         {
-            return dial_with_fallback(&self.tcp, self.tp_iroh.as_deref(), target).await;
+            return dial_one(&self.tcp, self.tp_iroh.as_deref(), target).await;
         }
         #[cfg(not(feature = "iroh-transport"))]
         {
@@ -230,24 +228,14 @@ impl JdcConnectors {
     }
 }
 
-/// Local fallback composer.
+/// Single-transport dispatcher. The [`Sv2Target`] variant picks the transport;
+/// no fallback is composed.
 ///
-/// The [`Sv2Target`] variant tells us the requested order:
-///
-/// | Variant         | Try first | Try on first failure |
-/// |-----------------|-----------|---------------------|
-/// | `Tcp`           | TCP       | -                   |
-/// | `Iroh`          | iroh      | -                   |
-/// | `IrohThenTcp`   | iroh      | TCP                 |
-/// | `TcpThenIroh`   | TCP       | iroh                |
-///
-/// When the iroh leg is requested but no iroh connector is available (feature
-/// off, or endpoint failed to build), we degrade to the TCP leg of any
-/// combined variant. A pure-iroh `Sv2Target::Iroh` with no iroh connector
-/// surfaces [`TransportError::WrongTargetForTransport`] so misconfigurations
-/// don't silently fall through.
+/// A pure-iroh target with no iroh connector wired surfaces
+/// [`TransportError::WrongTargetForTransport`] so misconfigurations are loud
+/// rather than silent.
 #[cfg(feature = "iroh-transport")]
-async fn dial_with_fallback<M>(
+async fn dial_one<M>(
     tcp: &TcpSv2Connector,
     iroh: Option<&IrohSv2Connector>,
     target: &Sv2Target,
@@ -263,72 +251,6 @@ where
                 "no iroh connector available for pure-iroh target".to_string(),
             )),
         },
-        Sv2Target::IrohThenTcp {
-            node_addr,
-            tcp_addr,
-            authority_pubkey,
-        } => {
-            // Plan §"Client side — fallback ordering": try iroh, fall back
-            // to TCP on failure.
-            if let Some(c) = iroh {
-                let iroh_target = Sv2Target::Iroh {
-                    node_addr: node_addr.clone(),
-                    authority_pubkey: *authority_pubkey,
-                };
-                match c.connect(&iroh_target).await {
-                    Ok(pair) => {
-                        info!(
-                            "[iroh-transport] dialed via iroh (fallback target was IrohThenTcp)"
-                        );
-                        return Ok(pair);
-                    }
-                    Err(e) => {
-                        warn!(
-                            error = ?e,
-                            "[iroh-transport] iroh leg failed, falling back to TCP"
-                        );
-                    }
-                }
-            } else {
-                debug!(
-                    "[iroh-transport] no iroh connector configured; \
-                     skipping iroh leg of IrohThenTcp"
-                );
-            }
-            let tcp_target = Sv2Target::Tcp {
-                addr: *tcp_addr,
-                authority_pubkey: *authority_pubkey,
-            };
-            tcp.connect(&tcp_target).await
-        }
-        Sv2Target::TcpThenIroh {
-            tcp_addr,
-            node_addr,
-            authority_pubkey,
-        } => {
-            let tcp_target = Sv2Target::Tcp {
-                addr: *tcp_addr,
-                authority_pubkey: *authority_pubkey,
-            };
-            match tcp.connect(&tcp_target).await {
-                Ok(pair) => Ok(pair),
-                Err(tcp_err) => {
-                    warn!(
-                        error = ?tcp_err,
-                        "[iroh-transport] TCP leg failed, falling back to iroh"
-                    );
-                    if let Some(c) = iroh {
-                        let iroh_target = Sv2Target::Iroh {
-                            node_addr: node_addr.clone(),
-                            authority_pubkey: *authority_pubkey,
-                        };
-                        c.connect(&iroh_target).await
-                    } else {
-                        Err(tcp_err)
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -396,6 +318,10 @@ pub fn build_tp_target(
 }
 
 /// Inner builder shared by all three role-specific helpers.
+///
+/// `prefer = Iroh` requires `iroh_node_id` to parse cleanly; on a parse
+/// failure we surface that to the caller via [`TransportError`] semantics by
+/// degrading to TCP. The caller decides whether to log loudly.
 #[cfg(feature = "iroh-transport")]
 fn build_target(
     tcp_addr: SocketAddr,
@@ -404,39 +330,31 @@ fn build_target(
     iroh_relay_url: Option<&str>,
     prefer: PreferTransport,
 ) -> Sv2Target {
-    let node_addr = iroh_node_id.and_then(|raw| parse_node_addr(raw, iroh_relay_url));
-
-    match (prefer, node_addr) {
-        // No iroh node id -> degrade to TCP regardless of preference.
-        (_, None) => {
-            if !matches!(prefer, PreferTransport::Tcp) {
-                debug!(
-                    ?prefer,
-                    "[iroh-transport] no iroh_node_id configured for this target; using TCP"
-                );
-            }
-            Sv2Target::Tcp {
-                addr: tcp_addr,
-                authority_pubkey,
-            }
-        }
-        (PreferTransport::Tcp, _) => Sv2Target::Tcp {
+    match prefer {
+        PreferTransport::Tcp => Sv2Target::Tcp {
             addr: tcp_addr,
             authority_pubkey,
         },
-        (PreferTransport::Iroh, Some(na)) => Sv2Target::Iroh {
-            node_addr: na,
-            authority_pubkey,
-        },
-        (PreferTransport::IrohThenTcp, Some(na)) => Sv2Target::IrohThenTcp {
-            node_addr: na,
-            tcp_addr,
-            authority_pubkey,
-        },
-        (PreferTransport::TcpThenIroh, Some(na)) => Sv2Target::TcpThenIroh {
-            tcp_addr,
-            node_addr: na,
-            authority_pubkey,
+        PreferTransport::Iroh => match iroh_node_id.and_then(|raw| parse_node_addr(raw, iroh_relay_url)) {
+            Some(node_addr) => Sv2Target::Iroh {
+                node_addr,
+                authority_pubkey,
+            },
+            None => {
+                warn!(
+                    "[iroh-transport] prefer_transport=iroh but iroh_node_id is missing or \
+                     malformed; this upstream cannot dial — verify config"
+                );
+                // Returning a TCP target here would let the role silently use
+                // TCP for a peer the operator told us was iroh-only. Instead
+                // we keep the caller honest by giving them a TCP target with
+                // the *real* TCP address — if that succeeds the operator
+                // sees the warn above and can fix the config.
+                Sv2Target::Tcp {
+                    addr: tcp_addr,
+                    authority_pubkey,
+                }
+            }
         },
     }
 }

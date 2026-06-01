@@ -184,7 +184,8 @@ pub struct UpstreamEntry {
     /// treated the same as `None`.
     #[cfg(feature = "iroh-transport")]
     pub iroh_relay_url: Option<String>,
-    /// Per-peer transport preference. Defaults to `IrohThenTcp`.
+    /// Per-peer transport selection. An upstream is one transport — Tcp or
+    /// Iroh, no fallback.
     #[cfg(feature = "iroh-transport")]
     pub prefer_transport: stratum_apps::network_helpers::transport::PreferTransport,
 }

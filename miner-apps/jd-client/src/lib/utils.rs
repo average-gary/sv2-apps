@@ -69,8 +69,7 @@ pub struct UpstreamEntry {
     /// Optional iroh relay URL hint shared by pool + JDS for this upstream.
     #[cfg(feature = "iroh-transport")]
     pub iroh_relay_url: Option<String>,
-    /// Per-upstream transport preference (tcp / iroh / iroh_then_tcp /
-    /// tcp_then_iroh).
+    /// Per-upstream transport selection (tcp or iroh).
     #[cfg(feature = "iroh-transport")]
     pub prefer_transport: crate::config::PreferTransport,
 }

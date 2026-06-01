@@ -340,17 +340,15 @@ pub struct Upstream {
     pub user_identity: String,
 
     /// Optional iroh `NodeId` (base32 lowercase) of the upstream pool's iroh
-    /// listener (`sv2/pool/0`). Required for iroh dialing JDC→Pool. When
-    /// `None`, JDC dials this pool over TCP only regardless of
-    /// `prefer_transport`.
+    /// listener (`sv2/pool/0`). Required when `prefer_transport = "iroh"`;
+    /// ignored otherwise.
     #[cfg(feature = "iroh-transport")]
     #[serde(default)]
     pub iroh_pool_node_id: Option<String>,
 
     /// Optional iroh `NodeId` (base32 lowercase) of the upstream JDS's iroh
-    /// listener (`sv2/jds/0`). Required for iroh dialing JDC→JDS. When
-    /// `None`, JDC dials this JDS over TCP only regardless of
-    /// `prefer_transport`.
+    /// listener (`sv2/jds/0`). Required when `prefer_transport = "iroh"`;
+    /// ignored otherwise.
     #[cfg(feature = "iroh-transport")]
     #[serde(default)]
     pub iroh_jds_node_id: Option<String>,
@@ -363,9 +361,11 @@ pub struct Upstream {
     #[serde(default)]
     pub iroh_relay_url: Option<String>,
 
-    /// Per-upstream transport preference for both pool and JDS dials.
-    /// Defaults to [`PreferTransport::IrohThenTcp`] — try iroh first, fall
-    /// back to TCP on failure. Plan §"Client side — fallback ordering".
+    /// Per-upstream transport selection. An upstream is one transport — set
+    /// `iroh` to dial via iroh (requires `iroh_pool_node_id` /
+    /// `iroh_jds_node_id`), otherwise leave unset for TCP. To reach the same
+    /// physical peer over both transports configure two `[[upstreams]]`
+    /// entries.
     #[cfg(feature = "iroh-transport")]
     #[serde(default)]
     pub prefer_transport: PreferTransport,
@@ -400,28 +400,18 @@ impl Upstream {
     }
 }
 
-/// Per-peer fallback ordering used when both transports are configured.
-///
-/// See plan §"Client side — fallback ordering" for the dispatch matrix and
-/// the precise definition of "fail" for each leg. The values map onto the
-/// combined variants of [`stratum_apps::network_helpers::transport::Sv2Target`]
-/// at dial time.
+/// Per-peer transport selection. An upstream is one transport — TCP or iroh,
+/// no fallback. Operators who want both for the same physical peer configure
+/// two `[[upstreams]]` entries.
 #[cfg(feature = "iroh-transport")]
 #[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PreferTransport {
-    /// TCP only, no fallback.
-    Tcp,
-    /// Iroh only, no fallback.
-    Iroh,
-    /// Try iroh; if the iroh leg fails before any application bytes flow,
-    /// try TCP. **Default** for the most common deployment shape (UDP
-    /// reachable, but operators want TCP as a safety net).
+    /// TCP only. The default.
     #[default]
-    IrohThenTcp,
-    /// Try TCP; if it fails, try iroh. Useful for known UDP-throttled
-    /// networks where TCP is the primary path.
-    TcpThenIroh,
+    Tcp,
+    /// Iroh only.
+    Iroh,
 }
 
 /// Optional iroh transport configuration for the JDC→TP outbound dial.
@@ -434,7 +424,7 @@ pub enum PreferTransport {
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct TemplateProviderIrohConfig {
     /// iroh `NodeId` (base32 lowercase) of the TP's iroh listener
-    /// (`sv2/tp/0`). When `None`, JDC dials the TP over TCP only.
+    /// (`sv2/tp/0`). Required when `prefer_transport = "iroh"`.
     #[serde(default)]
     pub iroh_node_id: Option<String>,
     /// Relay URL hint for the TP dial. Falls back to the per-upstream

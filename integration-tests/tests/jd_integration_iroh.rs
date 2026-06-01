@@ -10,22 +10,17 @@
 //! - `jdc_dials_jds_over_iroh_and_completes_job_declaration` — JDC dials JDS
 //!   with `prefer_transport = "iroh"`. The JDC's `[[upstreams]] jds_port`
 //!   points at an UNBOUND TCP port — proving the connection cannot have used
-//!   TCP. Approach (b) from the test brief: with `PreferTransport::Iroh` the
-//!   JDC's dial site builds a pure `Sv2Target::Iroh` that has no TCP
-//!   fallback whatsoever, so any forward progress after JDC bootstrap is
-//!   evidence that iroh transported the bytes. We connect a `MockDownstream`
-//!   to the JDC and wait for the JDC's `SetupConnectionSuccess` to flow back
-//!   to the downstream — that gates on the JDS handshake succeeding (JDC
-//!   doesn't accept the downstream channel until after JDS bootstrap).
+//!   TCP. With `PreferTransport::Iroh` the JDC's dial site builds a pure
+//!   `Sv2Target::Iroh` that has no TCP fallback whatsoever, so any forward
+//!   progress after JDC bootstrap is evidence that iroh transported the
+//!   bytes. We connect a `MockDownstream` to the JDC and wait for the JDC's
+//!   `SetupConnectionSuccess` to flow back to the downstream — that gates on
+//!   the JDS handshake succeeding (JDC doesn't accept the downstream channel
+//!   until after JDS bootstrap).
 //!
-//! - `jdc_iroh_then_tcp_falls_back_when_iroh_node_unreachable` — JDC config
-//!   with `prefer_transport = "iroh_then_tcp"`, `iroh_jds_node_id` set to a
-//!   NodeId that is not running anywhere (and pointed at a closed UDP
-//!   port). JDC's `jds_address`/`jds_port` still point at the real JDS TCP
-//!   listener, so after the iroh leg fails the TCP fallback succeeds and
-//!   the SetupConnection handshake completes. The same `MockDownstream`
-//!   pattern asserts JDC reached the post-bootstrap state, i.e. the full
-//!   JDC pipeline came up despite the iroh dial failing.
+//! An upstream is one transport — there is no implicit TCP fallback. The
+//! prior `iroh_then_tcp` test was removed when the fallback variants left
+//! the API.
 
 #![cfg(feature = "iroh-transport")]
 
@@ -110,6 +105,7 @@ fn iroh_role_config_for_jds(
         listen_address,
         secret_key_path,
         discovery: DiscoveryConfigToml {
+            discovery_local_enable: Some(false),
             discovery_relay_enable: Some(false),
             discovery_pkarr_pub_enable: Some(false),
             discovery_pkarr_res_enable: Some(false),
@@ -148,6 +144,7 @@ fn iroh_role_config_for_jdc_outbound(
         listen_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         secret_key_path: path,
         discovery: DiscoveryConfigToml {
+            discovery_local_enable: Some(false),
             discovery_relay_enable: Some(false),
             discovery_pkarr_pub_enable: Some(false),
             discovery_pkarr_res_enable: Some(false),
@@ -420,78 +417,6 @@ async fn jdc_dials_jds_over_iroh_and_completes_job_declaration() {
         ),
         "JDC did not emit SetupConnectionSuccess within 45s — \
          iroh JDS handshake likely failed",
-    )
-    .await;
-
-    shutdown_all!(jdc, pool);
-}
-
-/// Test 2: JDC config requests `iroh_then_tcp`, but the iroh leg targets a
-/// NodeId that has no listener. JDC's iroh attempt errors out (per-request
-/// timeout or immediate failure) and the composite connector then dials TCP,
-/// which succeeds because `jds_address`/`jds_port` point at the real JDS
-/// TCP listener.
-///
-/// The flow we look for is identical to test 1 (JDC reaching
-/// SetCustomMiningJob) — different cause, same result.
-#[tokio::test(flavor = "multi_thread")]
-async fn jdc_iroh_then_tcp_falls_back_when_iroh_node_unreachable() {
-    start_tracing();
-
-    // For this test we don't run an iroh listener for JDS — we just fabricate
-    // a NodeId that points nowhere. The JDS still needs to be reachable over
-    // TCP (the fallback path).
-    let (tp, tp_addr) = start_template_provider(None, DifficultyLevel::Low);
-    let (pool, pool_addr, jds_tcp_addr, _) =
-        start_pool_with_jds(tp.bitcoin_core(), vec![], vec![], false).await;
-
-    // A NodeId belonging to a key we generated locally and never bound.
-    let unreachable_secret = iroh::SecretKey::generate();
-    let unreachable_node_id = unreachable_secret.public();
-
-    // Set a bogus direct address for the connection override so the iroh
-    // dial does not attempt discovery (discovery is off anyway in test
-    // mode). The TCP fallback should kick in either when the iroh dial
-    // returns Err quickly or when the per-request timeout fires.
-    //
-    // Bind+drop a port so we get one that's almost certainly closed.
-    let unreachable_iroh = {
-        let listener = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-            .expect("ephemeral udp");
-        let addr = listener.local_addr().expect("addr");
-        drop(listener);
-        addr
-    };
-
-    let jdc_address = get_available_address();
-    let jdc_config = build_jdc_config_iroh(
-        pool_addr,
-        jds_tcp_addr,
-        Some(unreachable_node_id.to_string()),
-        Some(unreachable_iroh),
-        PreferTransport::IrohThenTcp,
-        jdc_address,
-        sv2_tp_config(tp_addr),
-    );
-    let (jdc, jdc_listen) = start_jdc_with_config(jdc_config);
-
-    let (jdc_down_sniffer, jdc_down_sniffer_addr) =
-        start_sniffer("jdc-downstream-fallback", jdc_listen, false, vec![], None);
-    let _send_to_jdc = MockDownstream::new(
-        jdc_down_sniffer_addr,
-        WithSetup::yes_with_defaults(Protocol::MiningProtocol, 0),
-    )
-    .start()
-    .await;
-
-    timeout_assert(
-        Duration::from_secs(45),
-        jdc_down_sniffer.wait_for_message_type(
-            MessageDirection::ToDownstream,
-            MESSAGE_TYPE_SETUP_CONNECTION_SUCCESS,
-        ),
-        "JDC did not emit SetupConnectionSuccess within 45s — \
-         iroh→tcp fallback path likely broken",
     )
     .await;
 

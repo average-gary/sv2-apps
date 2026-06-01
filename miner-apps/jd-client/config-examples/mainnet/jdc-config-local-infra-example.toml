@@ -70,14 +70,14 @@ user_identity = "your_primary_username_here"
 # iroh_jds_node_id: same shape, for the JDS listener (`sv2/jds/0`).
 # iroh_relay_url: shared relay hint for both pool and JDS dials of this
 #   upstream. Empty/omitted = direct UDP only.
-# prefer_transport: one of "tcp" | "iroh" | "iroh_then_tcp" (default) |
-#   "tcp_then_iroh". When iroh fields are set but prefer_transport is "tcp",
-#   the iroh fields are ignored.
+# prefer_transport: "tcp" (default) or "iroh". An upstream is one transport
+#   — to reach the same physical pool/JDS over both, configure two
+#   `[[upstreams]]` entries.
 #
 # iroh_pool_node_id  = "k51qzi5uqu5dl..."
 # iroh_jds_node_id   = "k51qzi5uqu5dl..."
 # iroh_relay_url     = ""
-# prefer_transport   = "iroh_then_tcp"
+# prefer_transport   = "iroh"
 
 [[upstreams]]
 authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
@@ -89,7 +89,7 @@ user_identity = "your_backup_username_here"
 # iroh_pool_node_id  = "k51qzi5uqu5dl..."
 # iroh_jds_node_id   = "k51qzi5uqu5dl..."
 # iroh_relay_url     = ""
-# prefer_transport   = "iroh_then_tcp"
+# prefer_transport   = "iroh"
 
 # Local Sv2 Template Provider config
 [template_provider_type.Sv2Tp]
@@ -103,7 +103,7 @@ address = "127.0.0.1:8442"
 # [template_provider_iroh]
 # iroh_node_id     = "k51qzi5uqu5dl..."
 # iroh_relay_url   = ""
-# prefer_transport = "iroh_then_tcp"
+# prefer_transport = "iroh"
 
 # ----------------------------------------------------------------------------
 # [iroh] — JDC's downstream listener over the iroh transport

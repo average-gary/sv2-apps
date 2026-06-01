@@ -50,9 +50,8 @@ address = "127.0.0.1:8442"
 # # Optional explicit relay URL. Empty string / unset means rely on
 # # discovery (or direct dial if no relay is needed).
 # iroh_relay_url  = ""
-# # Per-peer fallback ordering. One of:
-# #   "tcp"            — TCP only (no iroh attempt)
-# #   "iroh"           — iroh only (no TCP fallback)
-# #   "iroh_then_tcp"  — try iroh; on failure, try TCP (default)
-# #   "tcp_then_iroh"  — try TCP; on failure, try iroh
-# prefer_transport = "iroh_then_tcp"
+# # Per-peer transport selection. An upstream is one transport — to dial the
+# # same physical TP over both, configure two TPs in your deployment.
+# #   "tcp"   — TCP only (default)
+# #   "iroh"  — iroh only (requires iroh_node_id)
+# prefer_transport = "iroh"

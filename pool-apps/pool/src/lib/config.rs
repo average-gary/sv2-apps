@@ -63,11 +63,10 @@ pub struct PoolConfig {
     #[serde(default)]
     pub iroh: Option<stratum_apps::network_helpers::iroh::IrohRoleConfig>,
     /// Optional iroh-extension config for the upstream Sv2 Template Provider
-    /// dial. When `template_provider_type = Sv2Tp` and this section is present
-    /// the pool can dial the TP over iroh (with TCP fallback per
-    /// `prefer_transport`). The Sv2 authority pubkey and TCP address still
-    /// come from `[template_provider_type.Sv2Tp]` so TCP fallback works
-    /// unchanged when iroh is disabled.
+    /// dial. When `template_provider_type = Sv2Tp` and this section is
+    /// present the pool dials the TP over iroh; otherwise it dials TCP.
+    /// An upstream is one transport, so this section IS the iroh dial — no
+    /// implicit TCP fallback.
     ///
     /// This field is pool-local rather than embedded in the
     /// [`TemplateProviderType::Sv2Tp`] variant so the stratum-apps `tp_type`
@@ -86,16 +85,15 @@ pub struct PoolConfig {
 #[cfg(feature = "iroh-transport")]
 #[derive(Clone, Debug, serde::Deserialize, Default)]
 pub struct Sv2TpIrohExt {
-    /// Base32-lowercase NodeId of the TP. Required to enable iroh dialing.
-    /// When `None`, the pool falls back to TCP regardless of
-    /// `prefer_transport`.
+    /// Base32-lowercase NodeId of the TP. Required when `prefer_transport =
+    /// "iroh"`.
     #[serde(default)]
     pub iroh_node_id: Option<String>,
     /// Optional relay URL for the TP. Empty / `None` means rely on the
     /// connector endpoint's discovery to locate the TP.
     #[serde(default)]
     pub iroh_relay_url: Option<String>,
-    /// Per-peer transport preference. Defaults to `iroh_then_tcp`.
+    /// Per-peer transport selection. Defaults to `tcp`.
     #[serde(default)]
     pub prefer_transport: PreferTransport,
 }

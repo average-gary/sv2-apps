@@ -88,11 +88,8 @@ pub struct Upstream {
     /// This will be appended with a counter for each mining channel (e.g., username.miner1,
     /// username.miner2).
     pub user_identity: String,
-    /// Optional iroh NodeId of the upstream. When set (and the
-    /// `iroh-transport` feature is enabled, plus the top-level `[iroh]` block
-    /// is configured), the translator can dial this peer over iroh in
-    /// addition to (or instead of) TCP — the actual ordering is controlled
-    /// by [`Upstream::prefer_transport`].
+    /// Optional iroh NodeId of the upstream. Required when
+    /// `prefer_transport = "iroh"`; ignored otherwise.
     #[cfg(feature = "iroh-transport")]
     #[serde(default)]
     pub iroh_node_id: Option<String>,
@@ -101,9 +98,10 @@ pub struct Upstream {
     #[cfg(feature = "iroh-transport")]
     #[serde(default)]
     pub iroh_relay_url: Option<String>,
-    /// Per-peer transport preference. Defaults to
-    /// [`PreferTransport::IrohThenTcp`] (i.e. iroh first, fall back to
-    /// TCP). Only meaningful when `iroh_node_id` is also set.
+    /// Per-peer transport selection. An upstream is one transport — set
+    /// `iroh` to dial via iroh (requires `iroh_node_id`), otherwise leave
+    /// unset for TCP. Operators who want both for the same physical peer
+    /// configure two `[[upstreams]]` entries.
     #[cfg(feature = "iroh-transport")]
     #[serde(default)]
     pub prefer_transport: PreferTransport,

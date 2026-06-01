@@ -14,14 +14,7 @@
 //!     SetupConnection / OpenExtendedMiningChannel / NewExtendedMiningJob /
 //!     SubmitSharesExtended flow end-to-end.
 //!
-//! Test 2 (`translator_iroh_then_tcp_fallback`):
-//!     Translator configured with `prefer_transport = "iroh_then_tcp"` and
-//!     a EndpointId that does not resolve to a reachable iroh listener (no peer
-//!     was ever started for that EndpointId). The pool's TCP listener IS bound
-//!     and reachable. The translator must successfully fall back to TCP and
-//!     complete the SV2 setup end-to-end.
-//!
-//! Test 3 (`translator_iroh_with_whitelist_admission`):
+//! Test 2 (`translator_iroh_with_whitelist_admission`):
 //!     Pool admission policy is set to whitelist mode. First half of the
 //!     test: whitelist contains the translator's EndpointId — translator
 //!     connects. Second half: the pool is restarted with a whitelist that
@@ -370,70 +363,7 @@ async fn translator_dials_pool_over_iroh_with_sv1_downstream_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 — `iroh_then_tcp` fallback: unreachable EndpointId, TCP succeeds.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn translator_iroh_then_tcp_fallback() {
-    start_tracing();
-
-    let (_tp, tp_addr) = start_template_provider(None, DifficultyLevel::Low);
-
-    // Pool: TCP listener bound and reachable. No iroh listener at all — so a
-    // dial to any iroh EndpointId targeting this pool's UDP-side will never
-    // succeed.
-    let (pool, pool_tcp_addr, _) =
-        start_pool(sv2_tp_config(tp_addr), vec![], vec![], false).await;
-
-    // Generate a EndpointId that has never been bound to a real iroh listener.
-    // The translator's iroh dial against this EndpointId must fail (no peer to
-    // connect to), and the `iroh_then_tcp` ordering must fall back to TCP.
-    let unreachable_secret = SecretKey::generate();
-    let unreachable_node_id = unreachable_secret.public();
-
-    // Translator iroh endpoint (its outbound dialer side). Discovery is
-    // disabled in `iroh_role_config_for_test`, so dialing the unreachable
-    // EndpointId can only resolve via direct addresses — and there are none —
-    // forcing a fast fail.
-    let translator_secret_path = unique_secret_key_path("translator-fallback");
-    let _ = generate_and_persist_secret_key(&translator_secret_path);
-    let translator_iroh_cfg = iroh_role_config_for_test(
-        get_available_address().port(),
-        &translator_secret_path,
-        AdmissionTestConfig::Open,
-    );
-
-    // No connection_overrides for the unreachable EndpointId — the iroh leg has
-    // no addressing information, so the translator's iroh dial will fail
-    // immediately ("No addressing information available") and the
-    // `iroh_then_tcp` ordering must move on to TCP.
-    let (translator, tproxy_addr) = start_translator_iroh(
-        pool_tcp_addr,
-        unreachable_node_id,
-        translator_iroh_cfg,
-        PreferTransport::IrohThenTcp,
-        BTreeMap::new(),
-    )
-    .await;
-
-    let (sv1_sniffer, sv1_sniffer_addr) = start_sv1_sniffer(tproxy_addr);
-    let (_minerd_process, _minerd_addr) =
-        start_minerd(sv1_sniffer_addr, None, None, false).await;
-
-    // If fallback works, the miner gets a job over the TCP leg.
-    sv1_sniffer
-        .wait_for_message(&["mining.notify"], MessageDirection::ToDownstream)
-        .await;
-    sv1_sniffer
-        .wait_for_message(&["mining.submit"], MessageDirection::ToUpstream)
-        .await;
-
-    shutdown_all!(translator, pool);
-    let _ = std::fs::remove_file(&translator_secret_path);
-}
-
-// ---------------------------------------------------------------------------
-// Test 3 — Whitelist admission: allow / deny by EndpointId.
+// Test 2 — Whitelist admission: allow / deny by EndpointId.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
