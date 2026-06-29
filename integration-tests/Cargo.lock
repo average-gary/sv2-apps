@@ -1852,6 +1852,7 @@ dependencies = [
  "stratum-apps",
  "tokio",
  "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]

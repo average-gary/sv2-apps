@@ -54,10 +54,56 @@ impl HandleJobDeclarationMessagesFromClientAsync for JobDeclarator {
 
         let allocated_token = self.token_manager.allocate(client_id);
 
-        let coinbase_tx_output = TxOut {
+        // Decode and normalize `user_identifier` before handing it to the engine.
+        //
+        // Normalization rules (kept in sync with the JobValidationEngine trait
+        // doc-comment on `handle_allocate_mining_job_token`):
+        // - UTF-8 strict (non-UTF-8 yields `None` and falls back to the
+        //   pool-wide script),
+        // - NFKC normalization,
+        // - ASCII-whitespace trim.
+        let decoded_user_identifier: Option<String> =
+            std::str::from_utf8(msg.user_identifier.inner_as_ref())
+                .ok()
+                .map(|s| {
+                    use unicode_normalization::UnicodeNormalization;
+                    s.trim_matches(|c: char| c.is_ascii_whitespace())
+                        .nfkc()
+                        .collect::<String>()
+                });
+
+        // Pool-wide default `TxOut` the JDS falls back to if the engine does
+        // not provide a per-token override (or refuses for size reasons).
+        let default_coinbase_tx_output = TxOut {
             value: Amount::from_sat(0), // spec says we must set the value to 0
             script_pubkey: self.coinbase_reward_script.script_pubkey(),
         };
+
+        // Size budget passed to the engine: serialized size of the pool-wide
+        // default `TxOut`, which is what the JDS would have produced absent any
+        // per-miner customization. Engines MUST keep their custom `TxOut`
+        // within this budget or return `None`.
+        let coinbase_output_max_additional_size =
+            consensus::serialize(&default_coinbase_tx_output).len();
+
+        // Ask the engine whether it wants to override the coinbase output for
+        // this token. `None` (the trait default) preserves upstream pool-wide
+        // behavior. Without a valid user_identifier the engine cannot key its
+        // payout map; skip the call and fall through to the default `TxOut`.
+        let engine_override = match decoded_user_identifier.as_deref() {
+            Some(user_identifier) => {
+                self.job_validator
+                    .handle_allocate_mining_job_token(
+                        allocated_token,
+                        user_identifier,
+                        coinbase_output_max_additional_size,
+                    )
+                    .await
+            }
+            None => None,
+        };
+
+        let coinbase_tx_output = engine_override.unwrap_or(default_coinbase_tx_output);
 
         // spec says we must use a CompactSize encoded array, even if there's only one output
         let coinbase_tx_outputs: Vec<TxOut> = vec![coinbase_tx_output];

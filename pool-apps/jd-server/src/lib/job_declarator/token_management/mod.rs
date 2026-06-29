@@ -34,6 +34,33 @@ use stratum_apps::{
 };
 use tracing::debug;
 
+/// Hook invoked by [`TokenManager`] whenever a token is removed from the
+/// allocated/active sets — explicitly (via `deallocate`, `deactivate`,
+/// `remove_downstream`, `clear`) or implicitly by the janitor expiring it.
+///
+/// Engines that maintain side-state keyed by `JdToken` (for example, a
+/// per-miner payout-script map populated by
+/// `JobValidationEngine::handle_allocate_mining_job_token`) register a
+/// `TokenPayoutEvictor` so they can drop the corresponding entries when the
+/// `TokenManager` evicts a token. Without this hook, a per-token map could
+/// outlive the JDS's own knowledge of the token and leak memory across the
+/// 10-minute (allocated) and 10-second (active) TTL windows.
+///
+/// Implementations must be cheap and non-blocking — they run inside the
+/// janitor's `retain` closure as well as on the JDP message-handling path.
+pub trait TokenPayoutEvictor: Send + Sync {
+    /// Called when an allocated token (one that was returned to a JDC by
+    /// `AllocateMiningJobTokenSuccess` but never activated) is evicted.
+    fn on_allocated_evicted(&self, _token: JdToken) {}
+
+    /// Called when an active token (one that was activated by
+    /// `DeclareMiningJobSuccess`) is evicted. `allocated_token` is the
+    /// originally allocated `JdToken` the active token was derived from, so
+    /// engines that key their side-state on the *allocated* token can still
+    /// find the entry to drop.
+    fn on_active_evicted(&self, _active_token: JdToken, _allocated_token: JdToken) {}
+}
+
 /// Data associated with an allocated token.
 /// - Instant is the allocation timestamp
 /// - DownstreamId is the downstream ID that allocated the token
@@ -52,6 +79,10 @@ pub struct TokenManager {
     active_tokens: Arc<DashMap<JdToken, ActiveTokenData>>,
     cancellation_token: CancellationToken,
     task_manager: Arc<TaskManager>,
+    /// Optional listener notified whenever a token is evicted from
+    /// `allocated_tokens` or `active_tokens` (explicitly or via the janitor).
+    /// See [`TokenPayoutEvictor`] for the contract.
+    payout_evictor: Option<Arc<dyn TokenPayoutEvictor>>,
 }
 
 #[cfg_attr(not(test), hotpath::measure_all)]
@@ -67,9 +98,26 @@ impl TokenManager {
             active_tokens: Arc::new(DashMap::new()),
             cancellation_token,
             task_manager,
+            payout_evictor: None,
         };
         token_manager.spawn_janitor_task();
         token_manager
+    }
+
+    /// Register a [`TokenPayoutEvictor`] to be notified on every eviction.
+    ///
+    /// Must be called before the first allocation if the caller wants to
+    /// receive notifications for tokens evicted by the janitor — the janitor
+    /// task captures the evictor by clone at spawn time. The typical wiring is
+    /// to construct a `TokenManager`, immediately call
+    /// `set_payout_evictor(...)`, and then proceed to drive allocations.
+    pub fn set_payout_evictor(&mut self, evictor: Arc<dyn TokenPayoutEvictor>) {
+        self.payout_evictor = Some(evictor);
+        // Re-spawn the janitor so it picks up the newly-installed evictor.
+        // Safe to spawn another janitor here because each janitor reads its
+        // own captured `evictor` Option; the older janitor will exit on
+        // cancellation alongside the rest of the JDS task graph.
+        self.spawn_janitor_task();
     }
 
     /// Allocates a new token and adds it to the allocated tokens set.
@@ -82,7 +130,11 @@ impl TokenManager {
 
     /// Removes a token from the allocated tokens set.
     pub fn deallocate(&self, token: JdToken) {
-        self.allocated_tokens.remove(&token);
+        if self.allocated_tokens.remove(&token).is_some() {
+            if let Some(evictor) = &self.payout_evictor {
+                evictor.on_allocated_evicted(token);
+            }
+        }
     }
 
     /// Checks if a token is allocated.
@@ -96,6 +148,13 @@ impl TokenManager {
 
     /// Takes an allocated token and removes it from the internal set.
     /// Creates a corresponding active token and adds it to the internal set.
+    ///
+    /// Note: `activate` removes the *allocated* token from `allocated_tokens`
+    /// but does NOT fire `on_allocated_evicted`. This is intentional —
+    /// activation is a transfer of the token's side-state from the allocated
+    /// stage to the active stage, not an eviction. Engines that track payout
+    /// side-state should keep their entry keyed by the original allocated
+    /// `JdToken` so that `on_active_evicted` can locate it later.
     pub fn activate(&self, allocated_token: JdToken, downstream_id: DownstreamId) -> JdToken {
         let removed_allocated = self.allocated_tokens.remove(&allocated_token).is_some();
 
@@ -132,6 +191,11 @@ impl TokenManager {
             active_tokens_len = self.active_tokens.len(),
             "TokenManager::deactivate"
         );
+        if let Some((_, (allocated_token, _, _))) = removed {
+            if let Some(evictor) = &self.payout_evictor {
+                evictor.on_active_evicted(active_token, allocated_token);
+            }
+        }
     }
 
     /// Returns the allocated token that corresponds to an active token.
@@ -151,6 +215,17 @@ impl TokenManager {
 
     /// Clears all allocated and active tokens.
     pub fn clear(&self) {
+        if let Some(evictor) = &self.payout_evictor {
+            // Notify per-token so evictors can drop side-state precisely.
+            for entry in self.allocated_tokens.iter() {
+                evictor.on_allocated_evicted(*entry.key());
+            }
+            for entry in self.active_tokens.iter() {
+                let active_token = *entry.key();
+                let allocated_token = entry.value().0;
+                evictor.on_active_evicted(active_token, allocated_token);
+            }
+        }
         self.allocated_tokens.clear();
         self.active_tokens.clear();
     }
@@ -163,8 +238,16 @@ impl TokenManager {
         let allocated_tokens_before = self.allocated_tokens.len();
         let active_tokens_before = self.active_tokens.len();
 
-        self.allocated_tokens
-            .retain(|_, (_, owner)| *owner != downstream_id);
+        let evictor = self.payout_evictor.clone();
+        self.allocated_tokens.retain(|token, (_, owner)| {
+            let keep = *owner != downstream_id;
+            if !keep {
+                if let Some(ev) = &evictor {
+                    ev.on_allocated_evicted(*token);
+                }
+            }
+            keep
+        });
 
         let allocated_tokens_after = self.allocated_tokens.len();
         let active_tokens_after = self.active_tokens.len();
@@ -187,6 +270,7 @@ impl TokenManager {
         let cancellation_token = self.cancellation_token.clone();
         let allocated_tokens = Arc::clone(&self.allocated_tokens);
         let active_tokens = Arc::clone(&self.active_tokens);
+        let evictor = self.payout_evictor.clone();
         let allocated_token_timeout = Duration::from_secs(ALLOCATED_TOKEN_TIMEOUT_SECS);
         let active_token_timeout = Duration::from_secs(ACTIVE_TOKEN_TIMEOUT_SECS);
         let janitor_interval = Duration::from_secs(JANITOR_INTERVAL_SECS);
@@ -203,11 +287,23 @@ impl TokenManager {
                         let allocated_before = allocated_tokens.len();
                         let active_before = active_tokens.len();
 
-                        allocated_tokens.retain(|_, (timestamp, _)| {
-                            now.duration_since(*timestamp) <= allocated_token_timeout
+                        allocated_tokens.retain(|token, (timestamp, _)| {
+                            let keep = now.duration_since(*timestamp) <= allocated_token_timeout;
+                            if !keep {
+                                if let Some(ev) = &evictor {
+                                    ev.on_allocated_evicted(*token);
+                                }
+                            }
+                            keep
                         });
-                        active_tokens.retain(|_, (_, timestamp, _)| {
-                            now.duration_since(*timestamp) <= active_token_timeout
+                        active_tokens.retain(|token, (allocated, timestamp, _)| {
+                            let keep = now.duration_since(*timestamp) <= active_token_timeout;
+                            if !keep {
+                                if let Some(ev) = &evictor {
+                                    ev.on_active_evicted(*token, *allocated);
+                                }
+                            }
+                            keep
                         });
 
                         let allocated_after = allocated_tokens.len();

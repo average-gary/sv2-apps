@@ -26,6 +26,7 @@ tokio = { version = "1.44.1", features = ["full"] }
 dashmap = "6.1.0"
 async-trait = "0.1"
 hotpath = "0.14.0"
+unicode-normalization = "0.1"
 
 [features]
 hotpath = ["hotpath/hotpath"]

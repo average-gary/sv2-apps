@@ -2,7 +2,7 @@
 
 use stratum_apps::{
     stratum_core::{
-        bitcoin::{BlockHash, Wtxid},
+        bitcoin::{BlockHash, TxOut, Wtxid},
         job_declaration_sv2::{DeclareMiningJob, ProvideMissingTransactionsSuccess, PushSolution},
         mining_sv2::SetCustomMiningJob,
     },
@@ -44,6 +44,57 @@ pub trait JobValidationEngine: Send + Sync {
         set_custom_mining_job: SetCustomMiningJob<'_>,
         allocated_token: JdToken,
     ) -> SetCustomMiningJobResult;
+
+    /// Allow the engine to attach a custom `TxOut` to an `AllocateMiningJobToken`
+    /// before the JDS responds with `AllocateMiningJobTokenSuccess`.
+    ///
+    /// Backends that want to route the coinbase reward to a per-miner payout
+    /// script (rather than the single pool-wide `coinbase_reward_script` held by
+    /// `JobDeclarator`) override this method to return `Some(tx_out)`. When the
+    /// engine returns `None` the JDS falls back to its existing pool-wide
+    /// behavior — i.e. a zero-value `TxOut` whose `script_pubkey` comes from the
+    /// `coinbase_reward_script` field on `JobDeclarator`. The default
+    /// implementation returns `None`, preserving the upstream behavior for
+    /// engines that do not need per-token payout binding (e.g.
+    /// `BitcoinCoreIPCEngine`).
+    ///
+    /// # `user_identifier` normalization
+    ///
+    /// The `user_identifier` passed here is the raw `Str0_255` payload from the
+    /// `AllocateMiningJobToken` message decoded with the following rules, and
+    /// engines MUST treat input matching these rules as canonical:
+    ///
+    /// - **UTF-8 strict.** Bytes that are not valid UTF-8 are rejected by the
+    ///   caller before this method is invoked (the caller returns `None` rather
+    ///   than passing a non-UTF-8 byte string).
+    /// - **NFKC normalization.** The caller normalizes the decoded string with
+    ///   Unicode Normalization Form KC before passing it here, so visually
+    ///   equivalent code-point sequences map to the same key.
+    /// - **ASCII-whitespace trim.** Leading and trailing ASCII whitespace
+    ///   (` `, `\t`, `\n`, `\r`, vertical-tab, form-feed) is stripped by the
+    ///   caller before normalization. Interior whitespace is preserved as-is.
+    ///
+    /// Engines may impose additional restrictions (e.g. character allowlists,
+    /// length caps below 255 bytes) on top of this normalization, but MUST NOT
+    /// assume any further canonicalization has happened upstream.
+    ///
+    /// # `coinbase_output_max_additional_size`
+    ///
+    /// Engines that produce a custom `TxOut` MUST ensure the serialized size of
+    /// the returned output fits within `coinbase_output_max_additional_size`
+    /// bytes (in the standard `bitcoin::consensus` encoding). If the engine
+    /// cannot satisfy this constraint it MUST return `None` so the JDS uses the
+    /// pool-wide fallback rather than produce an oversize coinbase.
+    ///
+    /// The default implementation returns `None`.
+    async fn handle_allocate_mining_job_token(
+        &self,
+        _token: JdToken,
+        _user_identifier: &str,
+        _coinbase_output_max_additional_size: usize,
+    ) -> Option<TxOut> {
+        None
+    }
 
     /// Performs backend-specific shutdown work.
     ///
