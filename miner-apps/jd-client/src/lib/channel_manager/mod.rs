@@ -815,7 +815,7 @@ impl ChannelManager {
                                         supported_extensions_inner,
                                         required_extensions_inner,
                                         #[cfg(feature = "monitoring")]
-                                        socket_address.ip(),
+                                        std::net::IpAddr::from([0u8, 0, 0, 0]),
                                     );
 
                                     this.channel_manager_io.downstream_sender.super_safe_lock(|map| map.insert(downstream_id, channel_manager_sender_downstream));

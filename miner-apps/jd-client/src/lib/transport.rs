@@ -410,7 +410,7 @@ pub fn spawn_conn_pair_io_tasks(
     conn_pair: ConnPair<Message>,
     outbound_rx: async_channel::Receiver<stratum_apps::utils::types::Sv2Frame>,
     inbound_tx: async_channel::Sender<stratum_apps::utils::types::Sv2Frame>,
-    cancellation_token: bitcoin_core_sv2::template_distribution_protocol::CancellationToken,
+    cancellation_token: stratum_apps::bitcoin_core_sv2::common::template_distribution_protocol::CancellationToken,
     fallback_coordinator: Option<stratum_apps::fallback_coordinator::FallbackCoordinator>,
 ) {
     use stratum_apps::channel_utils::ReceiverCleanup;
@@ -533,7 +533,7 @@ pub fn spawn_conn_pair_io_tasks(
 /// path used by the legacy listener bootstrap.
 struct FallbackRegistration {
     handler: Option<stratum_apps::fallback_coordinator::FallbackHandler>,
-    token: Option<bitcoin_core_sv2::template_distribution_protocol::CancellationToken>,
+    token: Option<stratum_apps::bitcoin_core_sv2::common::template_distribution_protocol::CancellationToken>,
 }
 
 impl FallbackRegistration {
