@@ -745,14 +745,25 @@ mod iroh_fixtures {
             attempt += 1;
             match endpoint.connect(node_addr.clone(), alpn).await {
                 Ok(connection) => {
-                    // Close the QUIC connection cleanly with a "probe done"
-                    // reason so the listener's `accept_bi` errors out
-                    // immediately rather than blocking until its
-                    // per-request timeout fires. iroh 1.0-rc treats a bare
-                    // `drop` as a graceful close that may take a few
-                    // milliseconds to propagate, which can make the
-                    // following real dial race the listener's previous
-                    // accept-pipeline timeout.
+                    // Queue a `CONNECTION_CLOSE` frame so the listener's
+                    // per-connection accept pipeline (currently blocked in
+                    // `accept_bi` waiting for the probe to open a bidi)
+                    // fast-fails instead of timing out at its per-request
+                    // deadline.
+                    //
+                    // CAVEAT: in iroh 1.0 `Connection::close` is sync and
+                    // only QUEUES the frame onto the QUIC stack — it does
+                    // NOT wait for transmission. If the caller drops the
+                    // probe endpoint immediately, the frame may never go
+                    // on the wire and the listener stays blocked until
+                    // its `per_request_timeout` fires (10s in tests) —
+                    // long enough to stall the next real dial.
+                    //
+                    // Callers should follow up with
+                    // `probe_endpoint.close().await; drop(probe_endpoint);`
+                    // (the *endpoint*-level close, not just the
+                    // connection-level one) so the queued frame actually
+                    // gets transmitted before the endpoint goes away.
                     use ::iroh::endpoint::VarInt;
                     connection.close(VarInt::from_u32(0), b"probe done");
                     drop(connection);

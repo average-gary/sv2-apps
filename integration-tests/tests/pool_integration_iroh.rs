@@ -231,6 +231,13 @@ async fn pool_listens_on_iroh_and_accepts_mining_device() {
     )
     .await
     .expect("pool's iroh listener should become reachable");
+    // Gracefully close the probe endpoint so the listener's
+    // per-connection accept pipeline (currently stuck in `accept_bi`
+    // waiting for the probe to open a bidi) fast-fails instead of
+    // waiting on its 10s per-request timeout. Without this, a probe
+    // followed by a real dial hits head-of-line blocking on the
+    // listener's serial accept loop.
+    probe_endpoint.close().await;
     drop(probe_endpoint);
 
     // Spin up the mining device on a fresh client iroh endpoint. Use the
@@ -396,6 +403,8 @@ async fn pool_dual_transport_accepts_both() {
     )
     .await
     .expect("pool's iroh listener should become reachable");
+    // Same head-of-line-blocking workaround as test 1 — see comment there.
+    probe_endpoint.close().await;
     drop(probe_endpoint);
 
     // -- TCP dialer --
