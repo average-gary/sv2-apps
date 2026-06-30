@@ -11,7 +11,7 @@ use crate::{
     job_declarator::{
         downstream::Downstream,
         job_validation::{JobValidationEngine, SetCustomMiningJobResult},
-        token_management::TokenManager,
+        token_management::{TokenManager, TokenPayoutEvictor},
     },
 };
 use async_channel::{unbounded, Receiver, Sender};
@@ -126,6 +126,34 @@ impl JobDeclarator {
         coinbase_reward_script: CoinbaseRewardScript,
         task_manager: Arc<TaskManager>,
     ) -> Result<Self, JDSErrorKind> {
+        Self::new_with_payout_evictor(
+            engine,
+            cancellation_token,
+            coinbase_reward_script,
+            task_manager,
+            None,
+        )
+        .await
+    }
+
+    /// Construct a `JobDeclarator` and install a
+    /// [`TokenPayoutEvictor`] on its internal `TokenManager` before any
+    /// allocation happens.
+    ///
+    /// Mirrors `JobDeclarator::new` but lets callers (e.g. binaries
+    /// that maintain per-token side-state in their
+    /// `JobValidationEngine`) receive eviction callbacks for every
+    /// token the JDS evicts — explicitly (via `deallocate`,
+    /// `deactivate`, `remove_downstream`, `clear`) or implicitly by
+    /// the janitor expiring it. See the `TokenPayoutEvictor` trait
+    /// doc-comment for the contract.
+    pub async fn new_with_payout_evictor(
+        engine: Arc<dyn JobValidationEngine>,
+        cancellation_token: CancellationToken,
+        coinbase_reward_script: CoinbaseRewardScript,
+        task_manager: Arc<TaskManager>,
+        payout_evictor: Option<Arc<dyn TokenPayoutEvictor>>,
+    ) -> Result<Self, JDSErrorKind> {
         let (job_declarator_sender, job_declarator_receiver) =
             unbounded::<DownstreamJobDeclarationMessage>();
         let job_declarator_io = Arc::new(JobDeclaratorIo {
@@ -134,8 +162,11 @@ impl JobDeclarator {
             downstream_client_senders: DashMap::new(),
         });
 
-        let token_manager =
+        let mut token_manager =
             TokenManager::new(cancellation_token.clone(), Arc::clone(&task_manager));
+        if let Some(evictor) = payout_evictor {
+            token_manager.set_payout_evictor(evictor);
+        }
 
         Ok(Self {
             token_manager,
