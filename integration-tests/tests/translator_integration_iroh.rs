@@ -210,6 +210,7 @@ async fn start_translator_iroh(
         upstream_tcp_address.ip().to_string(),
         upstream_tcp_address.port(),
         upstream_authority_pubkey,
+        "user_identity".to_string(),
     );
     upstream.iroh_node_id = Some(pool_node_id.to_string());
     upstream.iroh_relay_url = None;
@@ -234,7 +235,6 @@ async fn start_translator_iroh(
         2,
         2,
         4,
-        "user_identity".to_string(),
         false,
         false, // aggregate_channels
         Vec::new(),

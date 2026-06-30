@@ -423,6 +423,21 @@ pub fn assert_metric_not_present<'a, M: Into<Metric<'a>>>(metrics_text: &str, me
     }
 }
 
+/// Free-function shorthand for [`MonitoringApi::poll_metric_gte`] against a
+/// pre-built [`MonitoringApi`] at `addr`. Polls `/metrics` until the metric
+/// reaches `>= min` or panics on timeout.
+pub async fn poll_until_metric_gte<'a, M: Into<Metric<'a>>>(
+    addr: SocketAddr,
+    metric: M,
+    min: f64,
+    timeout: Duration,
+) -> String {
+    MonitoringApi::builder(addr)
+        .build()
+        .poll_metric_gte(metric, min, timeout)
+        .await
+}
+
 /// Assert that at least one exposition line matches the selector.
 pub fn assert_metric_present<'a, M: Into<Metric<'a>>>(metrics_text: &str, metric: M) {
     let metric = metric.into();

@@ -254,6 +254,7 @@ fn build_jdc_config_iroh(
         pool_tcp_addr.port(),
         jds_tcp_addr.ip().to_string(),
         jds_tcp_addr.port(),
+        "user_identity".to_string(),
     );
     upstream.iroh_jds_node_id = jds_iroh_node_id.clone();
     upstream.iroh_pool_node_id = None;
@@ -269,7 +270,6 @@ fn build_jdc_config_iroh(
     let mut config = JobDeclaratorClientConfig::new(
         jdc_address,
         protocol_config,
-        "IT-test".to_string(),
         10.0,
         1,
         pool_config,
