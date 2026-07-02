@@ -451,6 +451,10 @@ impl JobDeclarator {
     ///
     /// Note: `SetCustomMiningJob.Success.job_id` is not handled here.
     /// It is the caller's responsibility to set it.
+    ///
+    /// Concurrency: the `&mut self` receiver rules out concurrent `SetCustomMiningJob`
+    /// races on the same `JobDeclarator` — no other task can observe the intermediate
+    /// state between the validator's `.await` and `token_manager.deactivate(..)` below.
     pub async fn handle_set_custom_mining_job(
         &mut self,
         set_custom_mining_job: SetCustomMiningJob<'static>,
@@ -510,14 +514,16 @@ impl JobDeclarator {
             }
         };
 
-        // Clean up TokenManager
-        self.token_manager.deactivate(active_token);
-
-        match self
+        // Validate before deactivate so the active->allocated binding is still readable to
+        // the validator and to any downstream `TokenPayoutEvictor` consumers.
+        let result = self
             .job_validator
             .handle_set_custom_mining_job(set_custom_mining_job, allocated_token)
-            .await
-        {
+            .await;
+        // NOTE: cancellation between validate and deactivate leaks `active_token` until
+        // the 10s janitor TTL; a full fix requires a drop guard.
+        self.token_manager.deactivate(active_token);
+        match result {
             SetCustomMiningJobResult::Success => {
                 Ok(SetCustomMiningJobResponse::Ok(SetCustomMiningJobSuccess {
                     channel_id,
@@ -529,5 +535,278 @@ impl JobDeclarator {
                 request_id, channel_id, error_code,
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests locking in the `deactivate-after-validate` ordering established by
+    //! `handle_set_custom_mining_job`. See the doc-comment on that method.
+    //!
+    //! The `MockJobValidationEngine` here records observations into an
+    //! `Arc<Mutex<..>>` sidechannel; it does NOT mutate the `TokenManager`.
+    //! Tests build a `TokenManager` with an explicit `CancellationToken` that
+    //! they fire in `Drop` to stop the janitor task.
+    use super::*;
+    use crate::job_declarator::job_validation::{DeclareMiningJobResult, JobValidationEngine};
+    use async_trait::async_trait;
+    use std::{sync::Mutex as StdMutex, time::Instant};
+    use stratum_apps::stratum_core::{
+        binary_sv2::{Seq0255, U256},
+        job_declaration_sv2::{DeclareMiningJob, ProvideMissingTransactionsSuccess, PushSolution},
+    };
+
+    /// RAII drop-guard that cancels the janitor task so tests don't leak spawned tasks.
+    struct CancelOnDrop(CancellationToken);
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            self.0.cancel();
+        }
+    }
+
+    /// Sidechannel populated by the mock validator during
+    /// `handle_set_custom_mining_job` — proves ordering without mutating the
+    /// `TokenManager` itself.
+    #[derive(Default)]
+    struct ValidatorObservation {
+        /// `Some(true)` if the active->allocated lookup returned `Some(_)` at
+        /// validator call time; `Some(false)` if `None`; `None` if the mock
+        /// was never called.
+        binding_live_at_call: Option<bool>,
+        /// Monotonic tick captured at the end of the validator body.
+        validator_tick: Option<Instant>,
+    }
+
+    /// Mock [`JobValidationEngine`] returning a configured result and recording
+    /// call-time state via a shared sidechannel.
+    struct MockJobValidationEngine {
+        result: StdMutex<Option<SetCustomMiningJobResult>>,
+        token_manager: TokenManager,
+        expected_active_token: JdToken,
+        observation: Arc<StdMutex<ValidatorObservation>>,
+    }
+
+    #[async_trait]
+    impl JobValidationEngine for MockJobValidationEngine {
+        async fn handle_declare_mining_job(
+            &self,
+            _declare_mining_job: DeclareMiningJob<'_>,
+            _provide_missing_transactions_success: Option<ProvideMissingTransactionsSuccess<'_>>,
+        ) -> DeclareMiningJobResult {
+            DeclareMiningJobResult::Success
+        }
+
+        async fn handle_push_solution(&self, _push_solution: PushSolution<'_>) {}
+
+        async fn handle_set_custom_mining_job(
+            &self,
+            _set_custom_mining_job: SetCustomMiningJob<'_>,
+            _allocated_token: JdToken,
+        ) -> SetCustomMiningJobResult {
+            // Observation 1: is the active->allocated binding still live?
+            let binding_live = self
+                .token_manager
+                .allocated_from_active(self.expected_active_token)
+                .is_some();
+            // Yield so any hypothetical concurrent deactivate would have a
+            // chance to run before we record — belt-and-braces against a
+            // future reordering that violates the invariant.
+            tokio::task::yield_now().await;
+            let tick = Instant::now();
+            let mut obs = self.observation.lock().unwrap();
+            obs.binding_live_at_call = Some(binding_live);
+            obs.validator_tick = Some(tick);
+            drop(obs);
+
+            self.result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("mock result must be set before the call")
+        }
+    }
+
+    /// TokenPayoutEvictor test double that records monotonic ticks whenever
+    /// `on_active_evicted` fires.
+    #[derive(Default)]
+    struct RecordingEvictor {
+        evictor_tick: StdMutex<Option<Instant>>,
+        active_evictions: StdMutex<Vec<(JdToken, JdToken)>>,
+    }
+
+    impl TokenPayoutEvictor for RecordingEvictor {
+        fn on_active_evicted(&self, active_token: JdToken, allocated_token: JdToken) {
+            *self.evictor_tick.lock().unwrap() = Some(Instant::now());
+            self.active_evictions
+                .lock()
+                .unwrap()
+                .push((active_token, allocated_token));
+        }
+    }
+
+    fn test_coinbase_reward_script() -> CoinbaseRewardScript {
+        CoinbaseRewardScript::from_descriptor("addr(1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2)")
+            .expect("valid mainnet address descriptor")
+    }
+
+    fn build_set_custom_mining_job(active_token: JdToken) -> SetCustomMiningJob<'static> {
+        SetCustomMiningJob {
+            channel_id: 1,
+            request_id: 7,
+            token: active_token.to_le_bytes().to_vec().try_into().unwrap(),
+            version: 0,
+            prev_hash: U256::Owned(vec![0_u8; 32]),
+            min_ntime: 0,
+            nbits: 0,
+            coinbase_tx_version: 0,
+            coinbase_prefix: Vec::<u8>::new().try_into().unwrap(),
+            coinbase_tx_input_n_sequence: 0,
+            coinbase_tx_outputs: Vec::<u8>::new().try_into().unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: Seq0255::new(Vec::new()).unwrap(),
+        }
+    }
+
+    /// Table-driven over both `SetCustomMiningJobResult` arms.
+    ///
+    /// Proves the ordering invariant AND that `deactivate` runs unconditionally:
+    /// - Inside the validator body, `allocated_from_active(active_token)` returns `Some(_)`.
+    /// - After `handle_set_custom_mining_job` returns, the same lookup returns `None`.
+    #[tokio::test]
+    async fn validator_observes_binding_and_deactivate_runs_after() {
+        for result in [
+            SetCustomMiningJobResult::Success,
+            SetCustomMiningJobResult::Error("boom"),
+        ] {
+            let cancellation_token = CancellationToken::new();
+            let _guard = CancelOnDrop(cancellation_token.clone());
+            let task_manager = Arc::new(TaskManager::new());
+
+            // Bootstrap a real TokenManager -> allocate -> activate so the
+            // active->allocated mapping is live.
+            let token_manager =
+                TokenManager::new(cancellation_token.clone(), Arc::clone(&task_manager));
+            let downstream_id: DownstreamId = 0;
+            let allocated_token = token_manager.allocate(downstream_id);
+            let active_token = token_manager.activate(allocated_token, downstream_id);
+            assert_eq!(
+                token_manager.allocated_from_active(active_token),
+                Some(allocated_token),
+                "sanity: active token must map to allocated token before the call"
+            );
+
+            let observation = Arc::new(StdMutex::new(ValidatorObservation::default()));
+            let engine: Arc<dyn JobValidationEngine> = Arc::new(MockJobValidationEngine {
+                result: StdMutex::new(Some(result)),
+                token_manager: token_manager.clone(),
+                expected_active_token: active_token,
+                observation: Arc::clone(&observation),
+            });
+
+            // Build the JobDeclarator via its public constructor, then swap in
+            // our pre-populated TokenManager so the allocation is visible to
+            // the code under test. Both TokenManager values share their inner
+            // Arc<DashMap>s so this "swap" is really just picking one clone
+            // to hand to JobDeclarator.
+            let mut jd = JobDeclarator::new(
+                Arc::clone(&engine),
+                cancellation_token.clone(),
+                test_coinbase_reward_script(),
+                Arc::clone(&task_manager),
+            )
+            .await
+            .expect("JobDeclarator::new must succeed with a test engine");
+            jd.token_manager = token_manager.clone();
+
+            let scmj = build_set_custom_mining_job(active_token);
+            let _ = jd
+                .handle_set_custom_mining_job(scmj, None)
+                .await
+                .expect("outer call must succeed on both result arms");
+
+            let obs = observation.lock().unwrap();
+            assert_eq!(
+                obs.binding_live_at_call,
+                Some(true),
+                "validator must observe a live active->allocated binding at call time",
+            );
+            drop(obs);
+            assert_eq!(
+                token_manager.allocated_from_active(active_token),
+                None,
+                "deactivate must have run unconditionally after the validator returned",
+            );
+        }
+    }
+
+    /// Locks the strict ordering: the evictor tick is captured after the
+    /// validator tick. A future re-inversion of the reorder fails this test
+    /// mechanically.
+    #[tokio::test]
+    async fn evictor_fires_after_validator_returns() {
+        let cancellation_token = CancellationToken::new();
+        let _guard = CancelOnDrop(cancellation_token.clone());
+        let task_manager = Arc::new(TaskManager::new());
+
+        let mut token_manager =
+            TokenManager::new(cancellation_token.clone(), Arc::clone(&task_manager));
+        let evictor: Arc<RecordingEvictor> = Arc::new(RecordingEvictor::default());
+        token_manager.set_payout_evictor(Arc::clone(&evictor) as Arc<dyn TokenPayoutEvictor>);
+
+        let downstream_id: DownstreamId = 0;
+        let allocated_token = token_manager.allocate(downstream_id);
+        let active_token = token_manager.activate(allocated_token, downstream_id);
+
+        let observation = Arc::new(StdMutex::new(ValidatorObservation::default()));
+        let engine: Arc<dyn JobValidationEngine> = Arc::new(MockJobValidationEngine {
+            result: StdMutex::new(Some(SetCustomMiningJobResult::Success)),
+            token_manager: token_manager.clone(),
+            expected_active_token: active_token,
+            observation: Arc::clone(&observation),
+        });
+
+        let mut jd = JobDeclarator::new_with_payout_evictor(
+            Arc::clone(&engine),
+            cancellation_token.clone(),
+            test_coinbase_reward_script(),
+            Arc::clone(&task_manager),
+            Some(Arc::clone(&evictor) as Arc<dyn TokenPayoutEvictor>),
+        )
+        .await
+        .expect("JobDeclarator::new_with_payout_evictor must succeed");
+        jd.token_manager = token_manager.clone();
+
+        // Nudge the recorded validator tick strictly forward so tick equality
+        // on very fast machines still resolves the strict-lt assertion below.
+        // The evictor tick is captured after the validator returns, so any
+        // real-clock progress guarantees strict-lt; the sleep is defensive.
+        let scmj = build_set_custom_mining_job(active_token);
+        let _ = jd
+            .handle_set_custom_mining_job(scmj, None)
+            .await
+            .expect("outer call must succeed");
+
+        let obs = observation.lock().unwrap();
+        let validator_tick = obs
+            .validator_tick
+            .expect("validator must record a tick during the call");
+        drop(obs);
+        let evictor_tick = evictor
+            .evictor_tick
+            .lock()
+            .unwrap()
+            .expect("evictor must fire when deactivate runs on the active token");
+        assert!(
+            validator_tick < evictor_tick,
+            "validator tick ({:?}) must strictly precede evictor tick ({:?})",
+            validator_tick,
+            evictor_tick,
+        );
+        let active_evictions = evictor.active_evictions.lock().unwrap();
+        assert_eq!(
+            active_evictions.as_slice(),
+            &[(active_token, allocated_token)],
+            "evictor must record exactly the (active, allocated) pair we set up",
+        );
     }
 }
