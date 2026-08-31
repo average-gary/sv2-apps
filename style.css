@@ -332,6 +332,54 @@ footer a:hover {
     margin-top: 1rem;
 }
 
+/* Heading anchors */
+.anchor {
+    opacity: 0;
+    margin-left: 0.4rem;
+    color: var(--muted);
+    font-weight: 400;
+    text-decoration: none;
+}
+
+h2:hover .anchor,
+h3:hover .anchor,
+h4:hover .anchor,
+.anchor:focus {
+    opacity: 1;
+}
+
+/* Touch devices never hover, so keep anchors faintly visible */
+@media (hover: none) {
+    .anchor {
+        opacity: 0.4;
+    }
+}
+
+/* Table of contents */
+.toc {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 3rem;
+}
+
+.toc h2 {
+    font-size: 1.1rem;
+    margin: 0 0 0.5rem 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.toc ol {
+    margin: 0;
+}
+
+.toc a {
+    padding: 0;
+    border: none;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
     html {

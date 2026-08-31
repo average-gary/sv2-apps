@@ -19,9 +19,24 @@
     </header>
 
     <main>
+        <nav class="toc" aria-label="Contents">
+            <h2>Contents</h2>
+            <ol>
+                <li><a href="#proof">Testnet4 Validation</a></li>
+                <li><a href="#quantum">The Quantum Threat to Bitcoin</a></li>
+                <li><a href="#privacy">Additional Benefits</a></li>
+                <li><a href="#solution">The Solution: Wildcard Descriptor Rotation</a></li>
+                <li><a href="#comparison">Security Comparison: Static vs. Rotating Addresses</a></li>
+                <li><a href="#implementation">Implementation Details</a></li>
+                <li><a href="#verification">Verify It Yourself</a></li>
+                <li><a href="#getting-started">Getting Started</a></li>
+                <li><a href="#reading">Further Reading</a></li>
+            </ol>
+        </nav>
+
         <!-- Proof of Concept Section -->
         <section id="proof">
-            <h2>Testnet4 Validation</h2>
+            <h2>Testnet4 Validation<a class="anchor" href="#proof" aria-label="Permalink">#</a></h2>
             <p>
                 On January 28, 2026, we validated coinbase rotation on Bitcoin testnet4. Two blocks were mined 
                 using automatically rotated addresses derived from a single extended public key. Each block's 
@@ -39,7 +54,7 @@
     00000000000000005a65b2d963bc3117c3b0f92d5674483e7ab6af1e03d51267</code></pre>
             </div>
 
-            <h3>Mined Blocks</h3>
+            <h3 id="mined-blocks">Mined Blocks<a class="anchor" href="#mined-blocks" aria-label="Permalink">#</a></h3>
             <table>
                 <thead>
                     <tr>
@@ -68,7 +83,7 @@
                 </tbody>
             </table>
 
-            <h3>Descriptor Used</h3>
+            <h3 id="descriptor-used">Descriptor Used<a class="anchor" href="#descriptor-used" aria-label="Permalink">#</a></h3>
             <pre><code>wpkh(tpubDDHYkDsJ8XB1LLjMNrk5gXsmze87LRkWoNqprdXPud9Yx3ZfsjZZJEqscUgSRLJ1EG77KSKygC9uNAeDtgHsLtvH93MnPF2M9Vq5WvGvcLw/0/*)</code></pre>
             <p class="note">
                 The wildcard <code>/*</code> at the end enables automatic rotation. Each block found 
@@ -78,7 +93,7 @@
 
         <!-- Quantum Threat Section - Now Primary -->
         <section id="quantum">
-            <h2>The Quantum Threat to Bitcoin</h2>
+            <h2>The Quantum Threat to Bitcoin<a class="anchor" href="#quantum" aria-label="Permalink">#</a></h2>
             <p>
                 Bitcoin's security model relies on the Elliptic Curve Digital Signature Algorithm (ECDSA) 
                 and the secp256k1 curve. The security assumption is that deriving a private key from a 
@@ -93,7 +108,7 @@
             </p>
 
             <div class="callout">
-                <h4>BIP-360: Pay to Quantum Resistant Hash (P2QRH)</h4>
+                <h4 id="bip-360">BIP-360: Pay to Quantum Resistant Hash (P2QRH)<a class="anchor" href="#bip-360" aria-label="Permalink">#</a></h4>
                 <p>
                     The Bitcoin community is actively developing quantum-resistant solutions. 
                     <a href="https://github.com/bitcoin/bips/blob/master/bip-0360.mediawiki" target="_blank">BIP-360</a> 
@@ -110,7 +125,7 @@
                 </p>
             </div>
 
-            <h3>Understanding Public Key Exposure</h3>
+            <h3 id="public-key-exposure">Understanding Public Key Exposure<a class="anchor" href="#public-key-exposure" aria-label="Permalink">#</a></h3>
             <p>
                 Bitcoin addresses are derived from public keys through a one-way hash function:
             </p>
@@ -122,7 +137,7 @@ Address = SHA256(PublicKey)[0:20]        // P2WPKH (simplified)</code></pre>
                 (hash preimage resistance). <strong>The public key remains hidden until the first spend.</strong>
             </p>
 
-            <h3>The ECDSA Exposure Window</h3>
+            <h3 id="ecdsa-exposure-window">The ECDSA Exposure Window<a class="anchor" href="#ecdsa-exposure-window" aria-label="Permalink">#</a></h3>
             <div class="mermaid">
 flowchart TB
     subgraph fresh["Fresh Address (never spent from)"]
@@ -147,7 +162,7 @@ flowchart TB
     style exposed fill:#f8d7da,stroke:#dc3545
             </div>
 
-            <h3>Why Address Reuse is Dangerous</h3>
+            <h3 id="address-reuse">Why Address Reuse is Dangerous<a class="anchor" href="#address-reuse" aria-label="Permalink">#</a></h3>
             <p>
                 When you spend from an address, the full ECDSA public key is revealed in the transaction's 
                 witness data (for SegWit) or scriptSig (for legacy). A quantum attacker could then:
@@ -163,7 +178,7 @@ flowchart TB
                 address is quantum-vulnerable from the moment it's mined.</strong>
             </p>
 
-            <h3>The "Harvest Now, Decrypt Later" Attack</h3>
+            <h3 id="harvest-now-decrypt-later">The "Harvest Now, Decrypt Later" Attack<a class="anchor" href="#harvest-now-decrypt-later" aria-label="Permalink">#</a></h3>
             <p>
                 Nation-state adversaries are already archiving encrypted data and blockchain transactions 
                 with the expectation that future quantum computers will enable decryption. This is known 
@@ -179,7 +194,7 @@ flowchart TB
             </ul>
 
             <div class="callout warning">
-                <h4>Mining Pool Coinbases: A High-Value Target</h4>
+                <h4 id="mining-pool-coinbases">Mining Pool Coinbases: A High-Value Target<a class="anchor" href="#mining-pool-coinbases" aria-label="Permalink">#</a></h4>
                 <p>
                     Mining pools accumulate significant value in coinbase outputs. A pool using a single 
                     static address creates an attractive target: one public key exposure compromises 
@@ -187,7 +202,7 @@ flowchart TB
                 </p>
             </div>
 
-            <h3>Coinbase Rotation: Defense in Depth</h3>
+            <h3 id="defense-in-depth">Coinbase Rotation: Defense in Depth<a class="anchor" href="#defense-in-depth" aria-label="Permalink">#</a></h3>
             <p>
                 By deriving a fresh address for each block, coinbase rotation ensures:
             </p>
@@ -198,7 +213,7 @@ flowchart TB
                 <li><strong>Reduced attack surface:</strong> An attacker must crack each address individually</li>
             </ul>
 
-            <h3>Quantum Timeline Considerations</h3>
+            <h3 id="quantum-timeline">Quantum Timeline Considerations<a class="anchor" href="#quantum-timeline" aria-label="Permalink">#</a></h3>
             <div class="mermaid">
 timeline
     title Quantum Computing & Bitcoin Security Timeline
@@ -223,7 +238,7 @@ timeline
 
         <!-- Brief Privacy Note -->
         <section id="privacy">
-            <h2>Additional Benefits</h2>
+            <h2>Additional Benefits<a class="anchor" href="#privacy" aria-label="Permalink">#</a></h2>
             <p>
                 Beyond quantum resistance, coinbase rotation provides operational benefits:
             </p>
@@ -236,7 +251,7 @@ timeline
 
         <!-- Solution Section -->
         <section id="solution">
-            <h2>The Solution: Wildcard Descriptor Rotation</h2>
+            <h2>The Solution: Wildcard Descriptor Rotation<a class="anchor" href="#solution" aria-label="Permalink">#</a></h2>
             <p>
                 Coinbase rotation leverages Bitcoin's hierarchical deterministic (HD) wallet standard 
                 (BIP-32/44/84) combined with miniscript descriptors. By specifying a wildcard (<code>/*</code>) 
@@ -244,7 +259,7 @@ timeline
                 extended public key&mdash;each with a unique, unexposed public key.
             </p>
 
-            <h3>Configuration Example</h3>
+            <h3 id="configuration-example">Configuration Example<a class="anchor" href="#configuration-example" aria-label="Permalink">#</a></h3>
             <pre><code class="language-toml"># pool-config.toml
 
 # Wildcard descriptor enables rotation
@@ -256,7 +271,7 @@ coinbase_index_file = "/var/lib/pool/coinbase_index.dat"
 # Starting derivation index (default: 0)
 coinbase_start_index = 0</code></pre>
 
-            <h3>Supported Descriptor Types</h3>
+            <h3 id="supported-descriptor-types">Supported Descriptor Types<a class="anchor" href="#supported-descriptor-types" aria-label="Permalink">#</a></h3>
             <table>
                 <thead>
                     <tr>
@@ -284,7 +299,7 @@ coinbase_start_index = 0</code></pre>
                 </tbody>
             </table>
 
-            <h3>How It Works</h3>
+            <h3 id="how-it-works">How It Works<a class="anchor" href="#how-it-works" aria-label="Permalink">#</a></h3>
             <div class="mermaid">
 sequenceDiagram
     participant Miner
@@ -307,7 +322,7 @@ sequenceDiagram
 
         <!-- Comparison Section -->
         <section id="comparison">
-            <h2>Security Comparison: Static vs. Rotating Addresses</h2>
+            <h2>Security Comparison: Static vs. Rotating Addresses<a class="anchor" href="#comparison" aria-label="Permalink">#</a></h2>
             <div class="mermaid">
 flowchart LR
     subgraph static["STATIC ADDRESS"]
@@ -336,14 +351,14 @@ flowchart LR
 
         <!-- Implementation Section -->
         <section id="implementation">
-            <h2>Implementation Details</h2>
+            <h2>Implementation Details<a class="anchor" href="#implementation" aria-label="Permalink">#</a></h2>
             <p>
                 The implementation uses Rust's <code>miniscript</code> crate for descriptor parsing and 
                 derivation. The current index is stored atomically in memory and persisted to disk after 
                 each rotation, ensuring crash-safety and restart resilience.
             </p>
 
-            <h3>Key Components</h3>
+            <h3 id="key-components">Key Components<a class="anchor" href="#key-components" aria-label="Permalink">#</a></h3>
             <dl>
                 <dt><code>XpubDerivator</code></dt>
                 <dd>
@@ -368,7 +383,7 @@ flowchart LR
                 </dd>
             </dl>
 
-            <h3>Persistence Format</h3>
+            <h3 id="persistence-format">Persistence Format<a class="anchor" href="#persistence-format" aria-label="Permalink">#</a></h3>
             <pre><code># Index format
 seq:42
 
@@ -378,7 +393,7 @@ seq:42
 
         <!-- Verification Section -->
         <section id="verification">
-            <h2>Verify It Yourself</h2>
+            <h2>Verify It Yourself<a class="anchor" href="#verification" aria-label="Permalink">#</a></h2>
             <p>
                 Don't trust, verify. You can independently confirm that the testnet4 blocks used the 
                 correct derived addresses by running the derivation yourself.
@@ -477,7 +492,7 @@ for (const i of [4, 5]) {
 // Index 5: tb1qlqym3pzn76qz5ecj7y36rwrgxrr83pnwxtc5rp</code></pre>
             </details>
 
-            <h3>Expected Derivation Table</h3>
+            <h3 id="expected-derivation-table">Expected Derivation Table<a class="anchor" href="#expected-derivation-table" aria-label="Permalink">#</a></h3>
             <table>
                 <thead>
                     <tr>
@@ -504,9 +519,9 @@ for (const i of [4, 5]) {
 
         <!-- Getting Started Section -->
         <section id="getting-started">
-            <h2>Getting Started</h2>
+            <h2>Getting Started<a class="anchor" href="#getting-started" aria-label="Permalink">#</a></h2>
             
-            <h3>Clone and Build</h3>
+            <h3 id="clone-and-build">Clone and Build<a class="anchor" href="#clone-and-build" aria-label="Permalink">#</a></h3>
             <pre><code class="language-bash"># Clone the feature branch
 git clone -b feat/coinbase-rotation \
   https://github.com/average-gary/sv2-apps.git
@@ -516,12 +531,12 @@ cd sv2-apps/pool-apps
 # Build the pool
 cargo build --release -p pool_sv2</code></pre>
 
-            <h3>Configure Rotation</h3>
+            <h3 id="configure-rotation">Configure Rotation<a class="anchor" href="#configure-rotation" aria-label="Permalink">#</a></h3>
             <pre><code class="language-toml"># In your pool-config.toml
 coinbase_reward_script = "wpkh(YOUR_TPUB_OR_XPUB/0/*)"
 coinbase_index_file = "/path/to/coinbase_index.dat"</code></pre>
 
-            <h3>Descriptor Conversion</h3>
+            <h3 id="descriptor-conversion">Descriptor Conversion<a class="anchor" href="#descriptor-conversion" aria-label="Permalink">#</a></h3>
             <p>
                 If you have a descriptor from Sparrow or Bitcoin Core in a different format, use:
             </p>
@@ -532,7 +547,7 @@ coinbase_index_file = "/path/to/coinbase_index.dat"</code></pre>
 
         <!-- Further Reading -->
         <section id="reading">
-            <h2>Further Reading</h2>
+            <h2>Further Reading<a class="anchor" href="#reading" aria-label="Permalink">#</a></h2>
             <ul>
                 <li><a href="https://github.com/bitcoin/bips/blob/master/bip-0360.mediawiki" target="_blank">BIP-360: Pay to Quantum Resistant Hash (P2QRH)</a></li>
                 <li><a href="https://en.bitcoin.it/wiki/Quantum_computing_and_Bitcoin" target="_blank">Bitcoin Wiki: Quantum Computing and Bitcoin</a></li>
