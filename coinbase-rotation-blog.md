@@ -17,7 +17,14 @@ Since then the descriptor has kept producing. A full scan of every address the w
 - **Block heights 91,282–150,815** (2025-07-15 to 2026-09-03 UTC)
 - **102,113.98 tBTC** total coinbase value
 
-The full block list, with per-index breakdown and explorer links, is on the [project site](https://average-gary.github.io/sv2-apps/#all-blocks). Several indices hold many blocks each: the index only advances when the pool's rotation hook runs, so restarts, non-rotating runs and static-address periods leave clusters rather than one block per index.
+Rotation was not enabled for this whole span, which is why the blocks are not spread one-per-index. Most of the time the pool ran with rotation off, pinned to a single derivation index, so every block in that stretch landed on the same address:
+
+- **Rotation on** (2026-01-28 → 2026-02-02): 28 blocks across 25 distinct indices, the index climbing 0 → 48 as blocks were found. Heights 120,436–121,241, 1,401.04 tBTC.
+- **Rotation off** (everything else): 2,014 blocks across 11 pinned indices — e.g. 1,413 blocks all paid to index 9, 223 to index 2. Same descriptor, no rotation, so those indices reuse a public key exactly the way a static coinbase address would.
+
+(A separate non-rotating instance mining to index 9 found 4 blocks during the rotation window, so the two runs overlap slightly.)
+
+The full block list, with per-index breakdown and explorer links, is on the [project site](https://average-gary.github.io/sv2-apps/#all-blocks).
 
 ```
 2026-01-28T17:44:24.925747Z  INFO pool_sv2::channel_manager::mining_message_handler:

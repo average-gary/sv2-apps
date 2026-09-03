@@ -57,9 +57,27 @@
                 </ul>
                 <p class="note">
                     Counts are coinbase outputs paying a derived address, from a full paginated scan of
-                    mempool.space testnet4 on 2026-09-03. Several indices hold many blocks each: the index
-                    only advances when the pool's rotation hook runs, so restarts, non-rotating runs and
-                    static-address periods leave clusters rather than one block per index.
+                    mempool.space testnet4 on 2026-09-03.
+                </p>
+                <p>
+                    <strong>Rotation was not enabled for this whole span</strong>, which is why the blocks
+                    are not spread one-per-index. Most of the time the pool ran with rotation off, pinned to
+                    a single derivation index, so every block in that stretch landed on the same address:
+                </p>
+                <ul>
+                    <li><strong>Rotation on</strong> (2026-01-28 &rarr; 2026-02-02): <strong>28 blocks
+                        across 25 distinct indices</strong>, the index climbing 0 &rarr; 48 as blocks were
+                        found. Heights 120,436&ndash;121,241, 1,401.04 tBTC. Nearly one fresh address per
+                        block, which is the behaviour the feature is meant to produce.</li>
+                    <li><strong>Rotation off</strong> (everything else): <strong>2,014 blocks across 11
+                        pinned indices</strong> &mdash; the large clusters in the table below, e.g. 1,413
+                        blocks all paid to index 9 and 223 to index 2. Same descriptor, no rotation, so the
+                        public key at those indices is reused exactly the way a static coinbase address
+                        would be.</li>
+                </ul>
+                <p class="note">
+                    The two runs overlap slightly: a separate non-rotating instance mining to index 9 found
+                    4 blocks during the rotation window.
                 </p>
             </div>
 
