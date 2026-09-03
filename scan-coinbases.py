@@ -148,7 +148,7 @@ while miss < GAP:
             out.append({'index': i, 'address': addr, 'txid': tx['txid'],
                         'height': tx['status'].get('block_height'),
                         'block_hash': tx['status'].get('block_hash'),
-                        'time': tx['status'].get('block_time'), 'value_sat': paid})
+                        'time': tx['status'].get('block_time')})
         last = page[-1]['txid']
         time.sleep(0.1)
         if len(page) < 25: break
@@ -161,4 +161,3 @@ json.dump(out, open('coinbases.json', 'w'), indent=2)
 hs = [r['height'] for r in out]
 print('\nTOTAL COINBASES: %d   unique heights: %d   range %s..%s   indices used: %d' %
       (len(out), len(set(hs)), min(hs), max(hs), len(set(r['index'] for r in out))))
-print('total sats: %d' % sum(r['value_sat'] for r in out))
