@@ -8,7 +8,16 @@
 
 ## Testnet4 Validation
 
-On January 28, 2026, we validated coinbase rotation on Bitcoin testnet4. Two blocks were mined using automatically rotated addresses derived from a single extended public key. Each block's coinbase output went to a fresh, never-before-used address—an address whose public key has never been exposed on-chain.
+On January 28, 2026, we validated coinbase rotation on Bitcoin testnet4: two blocks mined back to back, each paying its coinbase to a fresh address derived from a single extended public key—an address whose public key had never been exposed on-chain.
+
+Since then the descriptor has kept producing. A full scan of every address the wildcard descriptor can derive (mempool.space testnet4, 2026-09-03) finds:
+
+- **2,042 coinbase outputs** paid to addresses derived from this one descriptor
+- **31 distinct derivation indices** used (of 0–50 scanned, gap limit 30)
+- **Block heights 91,282–150,815** (2025-07-15 to 2026-09-03 UTC)
+- **102,113.98 tBTC** total coinbase value
+
+The full block list, with per-index breakdown and explorer links, is on the [project site](https://average-gary.github.io/sv2-apps/#all-blocks). Several indices hold many blocks each: the index only advances when the pool's rotation hook runs, so restarts, non-rotating runs and static-address periods leave clusters rather than one block per index.
 
 ```
 2026-01-28T17:44:24.925747Z  INFO pool_sv2::channel_manager::mining_message_handler:
