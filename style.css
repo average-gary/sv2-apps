@@ -1,35 +1,50 @@
 /* Coinbase Rotation - Minimal Clean Theme */
 
 :root {
-    --bg: #ffffff;
-    --text: #1a1a1a;
-    --muted: #666666;
-    --accent: #0066cc;
-    --accent-hover: #0052a3;
-    --code-bg: #f6f8fa;
-    --border: #e1e4e8;
-    --highlight-bg: #fff8e6;
-    --warning-bg: #fff3cd;
-    --warning-border: #ffc107;
-    --callout-bg: #e7f3ff;
-    --callout-border: #0066cc;
+    /* Follows the OS by default; the toggle pins color-scheme to one value. */
+    color-scheme: light dark;
+    --bg: light-dark(#ffffff, #0d1117);
+    --text: light-dark(#1a1a1a, #c9d1d9);
+    --muted: light-dark(#666666, #8b949e);
+    --accent: light-dark(#0066cc, #58a6ff);
+    --accent-hover: light-dark(#0052a3, #79b8ff);
+    --code-bg: light-dark(#f6f8fa, #161b22);
+    --border: light-dark(#e1e4e8, #30363d);
+    --highlight-bg: light-dark(#fff8e6, #3d2e00);
+    --warning-bg: light-dark(#fff3cd, #3d2e00);
+    --warning-border: light-dark(#ffc107, #d29922);
+    --callout-bg: light-dark(#e7f3ff, #1a3a52);
+    --callout-border: light-dark(#0066cc, #58a6ff);
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #0d1117;
-        --text: #c9d1d9;
-        --muted: #8b949e;
-        --accent: #58a6ff;
-        --accent-hover: #79b8ff;
-        --code-bg: #161b22;
-        --border: #30363d;
-        --highlight-bg: #3d2e00;
-        --warning-bg: #3d2e00;
-        --warning-border: #d29922;
-        --callout-bg: #1a3a52;
-        --callout-border: #58a6ff;
-    }
+:root[data-theme="light"] {
+    color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+}
+
+/* Theme toggle */
+#theme-toggle {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 10;
+    width: 2.5rem;
+    height: 2.5rem;
+    font-size: 1.1rem;
+    line-height: 1;
+    color: var(--text);
+    background-color: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+#theme-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
 }
 
 * {
@@ -417,7 +432,7 @@ h4:hover .anchor,
         text-align: left;
     }
 
-    nav, .mermaid {
+    nav, .mermaid, #theme-toggle {
         display: none;
     }
 
